@@ -14,7 +14,7 @@
 
 var SB_URL = 'https://zjcthmglltdrefwnflqm.supabase.co';
 var SB_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InpqY3RobWdsbHRkcmVmd25mbHFtIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTIwODA5OTMsImV4cCI6MjEwNzY1Njk5M30.hWorZSMT1C5dMVXYAaR2_fuduVwit4uJ9qrPGXcBk7o';
-var PROTO_V = 1;
+var PROTO_V = 2;
 var MAX_PLAYERS = 6;
 var LAPS = 3;
 
@@ -357,8 +357,10 @@ function resample(pts, step) {
   }
   return out;
 }
+var TRACK_SCALE = 1.35; // pista más grande
 function buildTrack(def) {
-  var samples = resample(catmullClosed(def.pts, 24), 9);
+  var pts = def.pts.map(function (p) { return [p[0] * TRACK_SCALE, p[1] * TRACK_SCALE]; });
+  var samples = resample(catmullClosed(pts, 24), 9);
   var n = samples.length, i;
   var tangents = [];
   for (i = 0; i < n; i++) {
@@ -370,7 +372,7 @@ function buildTrack(def) {
     if (p[0] < minX) minX = p[0]; if (p[0] > maxX) maxX = p[0];
     if (p[1] < minY) minY = p[1]; if (p[1] > maxY) maxY = p[1];
   });
-  return { def: def, samples: samples, n: n, tangents: tangents, roadHalf: def.roadHalf,
+  return { def: def, samples: samples, n: n, tangents: tangents, roadHalf: def.roadHalf * TRACK_SCALE,
            minX: minX, minY: minY, maxX: maxX, maxY: maxY };
 }
 function samplePoint(tr, prog) {
@@ -497,7 +499,7 @@ function startRace(cfg) {
 function makeCar(tr, slot) {
   var row = Math.floor(slot / 2), col = slot % 2;
   var prog = 0.972 - row * 0.011;
-  var lat = col === 0 ? -30 : 30;
+  var lat = col === 0 ? -36 : 36;
   var p = samplePoint(tr, prog), tang = sampleTangent(tr, prog);
   var nx = -Math.sin(tang), ny = Math.cos(tang);
   var idx = Math.floor(prog * tr.n) % tr.n;
@@ -505,6 +507,7 @@ function makeCar(tr, slot) {
            idx: idx, prevProg: prog, uProg: prog - 1, // uProg arranca en -1+prog (<0): cruzar la línea = vuelta 0 válida
            lap: 0, finished: false, ft: 0, offroad: false, inMud: false,
            spinT: 0, spinDir: 1, lastSkid: null, wrongT: 0, wrongAcc: 0, wrongWarn: false,
+           wallOut: false,
            hitCd: {} };
 }
 
@@ -515,8 +518,14 @@ function stepCar(me, tr, dt, input, race) {
   if (me.finished) { me.speed = Math.max(0, me.speed - 500 * dt); }
   else if (me.spinT > 0) {
     me.spinT -= dt;
-    me.a += 10.5 * dt * me.spinDir;
+    if (me.spinT > 0.35) {
+      me.a += 10.5 * dt * me.spinDir; // vueltas del trompo
+    } else {
+      // enderezar: al terminar queda mirando al sentido de la carrera
+      me.a += normAngle(tr.tangents[me.idx] - me.a) * Math.min(1, 10 * dt);
+    }
     me.speed = Math.max(0, me.speed - 420 * dt);
+    if (me.spinT <= 0) { me.spinT = 0; me.a = tr.tangents[me.idx]; }
   } else {
     // dirección suavizada
     var steerT = input.steer;
@@ -544,6 +553,18 @@ function stepCar(me, tr, dt, input, race) {
   var sp = tr.samples[me.idx];
   var distC = Math.hypot(me.x - sp[0], me.y - sp[1]);
   me.offroad = distC > tr.roadHalf;
+  // muros en los bordes: no se puede atajar por la hierba
+  var wallD = tr.roadHalf + 12;
+  if (distC > wallD) {
+    var wnx = (me.x - sp[0]) / distC, wny = (me.y - sp[1]) / distC;
+    me.x = sp[0] + wnx * wallD;
+    me.y = sp[1] + wny * wallD;
+    if (!me.wallOut) { // penalización solo al impactar, no mientras rozas
+      me.speed *= 0.85;
+      burst(race, me.x, me.y, '#ffd166', 8);
+    }
+  }
+  me.wallOut = distC > wallD;
   var prog = me.idx / tr.n;
   var du = prog - me.prevProg;
   if (du < -0.5) du += 1; else if (du > 0.5) du -= 1;
@@ -565,7 +586,7 @@ function stepCar(me, tr, dt, input, race) {
     for (var i = 0; i < race.obstacles.length; i++) {
       var o = race.obstacles[i];
       var dx = me.x - o.x, dy = me.y - o.y;
-      var rr = o.r + 13;
+      var rr = o.r + 16; // radio del coche más grande
       if (dx * dx + dy * dy > rr * rr) continue;
       if (o.type === 'mud') { me.inMud = true; continue; }
       if (now - (me.hitCd[o.id] || -9) < 2) continue;
@@ -583,15 +604,15 @@ function stepCar(me, tr, dt, input, race) {
         me.x -= Math.cos(me.a) * 38; me.y -= Math.sin(me.a) * 38;
         burst(race, o.x, o.y, '#999', 10);
       } else if (o.type === 'boost') {
-        me.speed = Math.min(P.maxSpeed * 1.45, me.speed + 230);
-        burst(race, me.x, me.y, '#39d353', 12);
+        me.speed = Math.min(P.maxSpeed * 1.7, me.speed + 380);
+        burst(race, me.x, me.y, '#39d353', 14);
       }
     }
   }
 
   // derrapes y polvo
   if (!me.finished && Math.abs(me.steer) > 0.55 && me.speed > 235 && !me.offroad) {
-    var bx = me.x - Math.cos(me.a) * 12, by = me.y - Math.sin(me.a) * 12;
+    var bx = me.x - Math.cos(me.a) * 15, by = me.y - Math.sin(me.a) * 15;
     if (me.lastSkid) {
       race.skids.push({ x1: me.lastSkid[0], y1: me.lastSkid[1], x2: bx, y2: by, a: 0.5 });
       if (race.skids.length > 420) race.skids.splice(0, race.skids.length - 420);
@@ -689,6 +710,21 @@ function buildStaticLayer(race) {
   strokeRoad(tr.roadHalf * 2 + 16, '#5e4226');
   strokeRoad(tr.roadHalf * 2, '#a87f4e');
   strokeRoad(5, 'rgba(230,205,150,0.65)', [30, 34]);
+
+  // muros: postes rojos/blancos en ambos bordes (impiden atajar por la hierba)
+  var wi, wside;
+  for (wi = 0; wi < tr.n; wi += 6) {
+    var wp = tr.samples[wi], wtang = tr.tangents[wi];
+    var wnx = -Math.sin(wtang), wny = Math.cos(wtang);
+    for (wside = -1; wside <= 1; wside += 2) {
+      var wx = wp[0] + wnx * wside * (tr.roadHalf + 12);
+      var wy = wp[1] + wny * wside * (tr.roadHalf + 12);
+      g.fillStyle = 'rgba(0,0,0,0.25)';
+      g.beginPath(); g.arc(wx + 2, wy + 3, 7, 0, 7); g.fill();
+      g.fillStyle = (((wi / 6) | 0) % 2) ? '#d62828' : '#f1faee';
+      g.beginPath(); g.arc(wx, wy, 7, 0, 7); g.fill();
+    }
+  }
 
   // línea de salida (ajedrez)
   (function () {
@@ -802,9 +838,10 @@ function drawMinimapDots() {
 }
 
 /* ---- coche ---- */
+var CAR_SCALE = 1.28; // coches un poco más grandes
 function drawCar(g, x, y, a, color, name, isMe, ghost) {
   g.save();
-  g.translate(x, y); g.rotate(a);
+  g.translate(x, y); g.rotate(a); g.scale(CAR_SCALE, CAR_SCALE);
   if (ghost) g.globalAlpha = 0.45;
   // sombra
   g.fillStyle = 'rgba(0,0,0,0.35)';
@@ -833,12 +870,12 @@ function drawCar(g, x, y, a, color, name, isMe, ghost) {
   if (name) {
     g.save();
     g.globalAlpha = ghost ? 0.5 : 1;
-    g.font = '700 22px sans-serif'; g.textAlign = 'center';
+    g.font = '700 24px sans-serif'; g.textAlign = 'center';
     g.lineWidth = 4; g.strokeStyle = 'rgba(0,0,0,0.7)';
     var label = (isMe ? '▶ ' : '') + name;
-    g.strokeText(label, x, y - 30);
+    g.strokeText(label, x, y - 36);
     g.fillStyle = isMe ? '#ffd166' : '#fff';
-    g.fillText(label, x, y - 30);
+    g.fillText(label, x, y - 36);
     g.restore();
   }
 }
@@ -1128,19 +1165,56 @@ function showResults() {
 function initInput() {
   var left = false, right = false;
   function upd() { S.input.steer = (right ? 1 : 0) - (left ? 1 : 0); }
-  function bindHold(elm, set) {
-    var on = function (e) { e.preventDefault(); set(true); };
-    var off = function (e) { e.preventDefault(); set(false); };
-    elm.addEventListener('touchstart', on, { passive: false });
-    elm.addEventListener('touchend', off);
-    elm.addEventListener('touchcancel', off);
-    elm.addEventListener('mousedown', on);
-    elm.addEventListener('mouseup', off);
-    elm.addEventListener('mouseleave', function () { set(false); });
+
+  /* Joystick analógico con un dedo: X = girar, Y hacia abajo = freno */
+  var joy = $('joystick'), knob = $('joy-knob');
+  var joyId = null, JR = 48;
+  function joySet(dx, dy) {
+    var d = Math.hypot(dx, dy);
+    if (d > JR) { dx = dx / d * JR; dy = dy / d * JR; }
+    knob.style.transform = 'translate(calc(-50% + ' + dx.toFixed(1) + 'px), calc(-50% + ' + dy.toFixed(1) + 'px))';
+    S.input.steer = clamp(dx / JR, -1, 1);
+    S.input.brake = dy > 22;
   }
-  bindHold($('touch-left'), function (v) { left = v; $('touch-left').classList.toggle('on', v); upd(); });
-  bindHold($('touch-right'), function (v) { right = v; $('touch-right').classList.toggle('on', v); upd(); });
-  bindHold($('btn-brake'), function (v) { S.input.brake = v; $('btn-brake').classList.toggle('on', v); });
+  function joyReset() {
+    joyId = null;
+    knob.style.transform = 'translate(-50%,-50%)';
+    S.input.steer = 0; S.input.brake = false;
+  }
+  function joyPos(t) {
+    var r = joy.getBoundingClientRect();
+    joySet(t.clientX - (r.left + r.width / 2), t.clientY - (r.top + r.height / 2));
+  }
+  joy.addEventListener('touchstart', function (e) {
+    e.preventDefault();
+    if (joyId !== null) return;
+    var t = e.changedTouches[0];
+    joyId = t.identifier;
+    joyPos(t);
+  }, { passive: false });
+  document.addEventListener('touchmove', function (e) {
+    if (joyId === null || joyId === 'mouse') return;
+    for (var i = 0; i < e.changedTouches.length; i++) {
+      if (e.changedTouches[i].identifier === joyId) { e.preventDefault(); joyPos(e.changedTouches[i]); }
+    }
+  }, { passive: false });
+  function joyTouchEnd(e) {
+    if (joyId === null || joyId === 'mouse') return;
+    for (var i = 0; i < e.changedTouches.length; i++) {
+      if (e.changedTouches[i].identifier === joyId) joyReset();
+    }
+  }
+  document.addEventListener('touchend', joyTouchEnd);
+  document.addEventListener('touchcancel', joyTouchEnd);
+  // ratón (para probar en escritorio)
+  joy.addEventListener('mousedown', function (e) {
+    e.preventDefault();
+    if (joyId !== null) return;
+    joyId = 'mouse';
+    joyPos(e);
+  });
+  document.addEventListener('mousemove', function (e) { if (joyId === 'mouse') joyPos(e); });
+  document.addEventListener('mouseup', function () { if (joyId === 'mouse') joyReset(); });
   document.addEventListener('keydown', function (e) {
     if (e.key === 'ArrowLeft') { left = true; upd(); }
     else if (e.key === 'ArrowRight') { right = true; upd(); }

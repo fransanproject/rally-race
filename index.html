@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="theme-color" content="#141a12">
 <title>Rally Race — carreras online con amigos</title>
-<link rel="stylesheet" href="style.css?v=1">
+<link rel="stylesheet" href="style.css?v=2">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
 </head>
 <body>
@@ -44,14 +44,14 @@
   <details class="rules">
     <summary>¿Cómo se juega?</summary>
     <ul>
-      <li>📱 <b>Toca la mitad izquierda o derecha</b> de la pantalla para girar. El coche acelera solo.</li>
-      <li>🛑 Botón <b>FRENO</b> abajo en el centro para las curvas cerradas (si lo mantienes parado, da marcha atrás).</li>
+      <li>📱 <b>Joystick con un dedo</b> (abajo en el centro): mueve ◀ ▶ para girar y ▼ para frenar. El coche acelera solo.</li>
       <li>🛢️ <b>Esquiva los obstáculos</b>: manchas de aceite (trompo), barriles y rocas (frenazo), barro (te hunde). Las <b>flechas verdes</b> dan turbo.</li>
+      <li>🧱 Hay <b>muros</b> en los bordes: no se puede atajar por la hierba.</li>
       <li>🏆 3 vueltas. Cada carrera genera los obstáculos en sitios distintos: ninguna carrera es igual.</li>
       <li>⚠️ Si vas en dirección contraria verás un aviso.</li>
     </ul>
   </details>
-  <p class="version-tag">v1</p>
+  <p class="version-tag">v2</p>
 </section>
 
 <!-- ============ SALA DE ESPERA ============ -->
@@ -94,16 +94,14 @@
   <button id="btn-leave-game" class="btn-small">✕</button>
   <div id="countdown" class="hidden"></div>
   <div id="wrongway" class="hidden">⚠️ ¡DIRECCIÓN CONTRARIA!</div>
-  <div id="touch-left" class="touchzone"><span>◀</span></div>
-  <div id="touch-right" class="touchzone"><span>▶</span></div>
-  <button id="btn-brake">FRENO</button>
-  <div id="hint" class="hidden">Toca ◀ ▶ para girar · el coche acelera solo</div>
+  <div id="joystick"><div id="joy-knob"></div></div>
+  <div id="hint" class="hidden">Mueve el joystick con un dedo: ◀ ▶ giras · ▼ frenas</div>
   <div id="finish-wait" class="hidden"></div>
   <div id="results" class="hidden"></div>
 </section>
 
 <div id="toast" class="hidden"></div>
 
-<script src="game.js?v=1"></script>
+<script src="game.js?v=2"></script>
 </body>
 </html>

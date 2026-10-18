@@ -93,21 +93,20 @@ input[type=text]:focus { border-color: #8fce62; }
   animation: blink .5s steps(2) infinite;
 }
 @keyframes blink { 50% { opacity: .55; } }
-.touchzone {
-  position: absolute; bottom: 0; top: 90px; width: 42%; z-index: 4;
-  display: flex; align-items: flex-end; justify-content: center; padding-bottom: 90px;
-  opacity: 0; transition: opacity .15s;
+/* Joystick analógico (un dedo): X = girar, Y abajo = freno */
+#joystick {
+  position: absolute; bottom: calc(30px + env(safe-area-inset-bottom)); left: 50%;
+  transform: translateX(-50%); width: 148px; height: 148px; border-radius: 50%;
+  background: rgba(255,255,255,.10); border: 2px solid rgba(255,255,255,.35);
+  z-index: 6; touch-action: none;
 }
-.touchzone span { font-size: 54px; color: #fff; text-shadow: 0 2px 8px rgba(0,0,0,.6); }
-.touchzone.on { opacity: .5; }
-#touch-left { left: 0; } #touch-right { right: 0; }
-#btn-brake {
-  position: absolute; bottom: calc(26px + env(safe-area-inset-bottom)); left: 50%; transform: translateX(-50%);
-  width: 108px; height: 108px; border-radius: 50%; z-index: 6;
-  background: rgba(198,18,31,.85); color: #fff; border: 3px solid rgba(255,255,255,.5);
-  font-size: 16px; font-weight: 800;
+#joy-knob {
+  position: absolute; left: 50%; top: 50%; width: 66px; height: 66px; border-radius: 50%;
+  background: radial-gradient(circle at 35% 30%, rgba(255,255,255,.75), rgba(255,255,255,.35));
+  border: 2px solid rgba(255,255,255,.6);
+  transform: translate(-50%,-50%);
+  pointer-events: none;
 }
-#btn-brake:active, #btn-brake.on { background: #ff2233; transform: translateX(-50%) scale(.94); }
 #hint {
   position: absolute; bottom: calc(150px + env(safe-area-inset-bottom)); left: 50%; transform: translateX(-50%);
   background: rgba(0,0,0,.7); padding: 10px 18px; border-radius: 12px; font-size: 15px;
