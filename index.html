@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#141a12">
+<title>Rally Race — carreras online con amigos</title>
+<link rel="stylesheet" href="style.css?v=1">
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+</head>
+<body>
+
+<div id="update-banner" class="hidden"></div>
+
+<!-- ============ PORTADA ============ -->
+<section id="screen-home" class="screen">
+  <div class="hero">
+    <div class="logo">🏁</div>
+    <h1>Rally Race</h1>
+    <p class="tagline">Carreras vista cenital, online con tus amigos.<br>Salas con código · hasta 6 jugadores · obstáculos en cada carrera.</p>
+  </div>
+  <div class="card-panel">
+    <div class="profile-row">
+      <div class="name-field">
+        <label for="input-name">Tu nombre</label>
+        <input type="text" id="input-name" maxlength="12" placeholder="Ej: Mork" autocomplete="off">
+      </div>
+    </div>
+    <div class="color-row" id="color-row"></div>
+    <div class="row">
+      <button id="btn-create" class="btn btn-big">Crear sala</button>
+    </div>
+    <div class="divider">— o —</div>
+    <div class="row">
+      <input type="text" id="input-code" maxlength="4" placeholder="1234" class="code-input" autocomplete="off" inputmode="numeric" pattern="[0-9]*">
+      <button id="btn-join" class="btn btn-big">Unirse</button>
+    </div>
+    <div class="divider">— o —</div>
+    <div class="row">
+      <button id="btn-solo" class="btn btn-big btn-secondary">🏎️ Practicar solo</button>
+    </div>
+    <p id="home-error" class="error"></p>
+  </div>
+  <details class="rules">
+    <summary>¿Cómo se juega?</summary>
+    <ul>
+      <li>📱 <b>Toca la mitad izquierda o derecha</b> de la pantalla para girar. El coche acelera solo.</li>
+      <li>🛑 Botón <b>FRENO</b> abajo en el centro para las curvas cerradas (si lo mantienes parado, da marcha atrás).</li>
+      <li>🛢️ <b>Esquiva los obstáculos</b>: manchas de aceite (trompo), barriles y rocas (frenazo), barro (te hunde). Las <b>flechas verdes</b> dan turbo.</li>
+      <li>🏆 3 vueltas. Cada carrera genera los obstáculos en sitios distintos: ninguna carrera es igual.</li>
+      <li>⚠️ Si vas en dirección contraria verás un aviso.</li>
+    </ul>
+  </details>
+  <p class="version-tag">v1</p>
+</section>
+
+<!-- ============ SALA DE ESPERA ============ -->
+<section id="screen-lobby" class="screen hidden">
+  <h2>Código de sala</h2>
+  <div><span id="lobby-code" class="code">····</span></div>
+  <div class="row"><button id="btn-copy" class="btn-small">📋 Copiar código</button></div>
+  <p id="lobby-note" class="muted"></p>
+  <ul id="lobby-players"></ul>
+  <p id="lobby-count" class="muted"></p>
+  <div id="track-select" class="hidden">
+    <p class="muted">Pista (la elige el anfitrión)</p>
+    <div class="row" id="track-buttons"></div>
+  </div>
+  <div class="row" style="margin-top:14px">
+    <button id="btn-start" class="btn btn-big hidden">🏁 ¡EMPEZAR CARRERA!</button>
+    <button id="btn-leave-lobby" class="btn-secondary">Salir</button>
+  </div>
+</section>
+
+<!-- ============ ESPERA (carrera en curso) ============ -->
+<section id="screen-waiting" class="screen hidden">
+  <div class="hero">
+    <div class="logo">⏳</div>
+    <h1>Carrera en curso</h1>
+    <p class="tagline">Tus amigos ya están corriendo.<br>Te unes automáticamente a la próxima.</p>
+  </div>
+  <div class="row"><button id="btn-leave-waiting" class="btn-secondary">Salir de la sala</button></div>
+</section>
+
+<!-- ============ CARRERA ============ -->
+<section id="screen-game" class="screen hidden">
+  <canvas id="game-canvas"></canvas>
+  <div id="hud" class="hidden">
+    <div class="hud-left"><span id="hud-pos">1º/1</span></div>
+    <div class="hud-center"><span id="hud-lap">Vuelta 1/3</span></div>
+    <div class="hud-right"><span id="hud-time">0:00.0</span></div>
+  </div>
+  <canvas id="minimap" width="150" height="110"></canvas>
+  <button id="btn-leave-game" class="btn-small">✕</button>
+  <div id="countdown" class="hidden"></div>
+  <div id="wrongway" class="hidden">⚠️ ¡DIRECCIÓN CONTRARIA!</div>
+  <div id="touch-left" class="touchzone"><span>◀</span></div>
+  <div id="touch-right" class="touchzone"><span>▶</span></div>
+  <button id="btn-brake">FRENO</button>
+  <div id="hint" class="hidden">Toca ◀ ▶ para girar · el coche acelera solo</div>
+  <div id="finish-wait" class="hidden"></div>
+  <div id="results" class="hidden"></div>
+</section>
+
+<div id="toast" class="hidden"></div>
+
+<script src="game.js?v=1"></script>
+</body>
+</html>
