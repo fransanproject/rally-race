@@ -93,20 +93,20 @@ input[type=text]:focus { border-color: #8fce62; }
   animation: blink .5s steps(2) infinite;
 }
 @keyframes blink { 50% { opacity: .55; } }
-/* Joystick analógico (un dedo): X = girar, Y abajo = freno */
-#joystick {
-  position: absolute; bottom: calc(30px + env(safe-area-inset-bottom)); left: 50%;
-  transform: translateX(-50%); width: 148px; height: 148px; border-radius: 50%;
-  background: rgba(255,255,255,.10); border: 2px solid rgba(255,255,255,.35);
-  z-index: 6; touch-action: none;
-}
-#joy-knob {
-  position: absolute; left: 50%; top: 50%; width: 66px; height: 66px; border-radius: 50%;
-  background: radial-gradient(circle at 35% 30%, rgba(255,255,255,.75), rgba(255,255,255,.35));
-  border: 2px solid rgba(255,255,255,.6);
-  transform: translate(-50%,-50%);
+/* Botones de giro: simples y grandes */
+#steer-controls {
+  position: absolute; bottom: calc(24px + env(safe-area-inset-bottom)); left: 0; right: 0;
+  display: flex; justify-content: space-between; padding: 0 20px; z-index: 6;
   pointer-events: none;
 }
+.steer-btn {
+  pointer-events: auto;
+  width: 42%; max-width: 230px; height: 124px; border-radius: 26px;
+  background: rgba(255,255,255,.14); border: 3px solid rgba(255,255,255,.4);
+  color: #fff; font-size: 58px; font-weight: 900; line-height: 1;
+  touch-action: none; user-select: none; -webkit-user-select: none;
+}
+.steer-btn.on { background: rgba(255,209,102,.5); border-color: #ffd166; }
 #hint {
   position: absolute; bottom: calc(150px + env(safe-area-inset-bottom)); left: 50%; transform: translateX(-50%);
   background: rgba(0,0,0,.7); padding: 10px 18px; border-radius: 12px; font-size: 15px;

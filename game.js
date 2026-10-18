@@ -14,7 +14,7 @@
 
 var SB_URL = 'https://zjcthmglltdrefwnflqm.supabase.co';
 var SB_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InpqY3RobWdsbHRkcmVmd25mbHFtIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTIwODA5OTMsImV4cCI6MjEwNzY1Njk5M30.hWorZSMT1C5dMVXYAaR2_fuduVwit4uJ9qrPGXcBk7o';
-var PROTO_V = 2;
+var PROTO_V = 3;
 var MAX_PLAYERS = 6;
 var LAPS = 3;
 
@@ -1166,55 +1166,19 @@ function initInput() {
   var left = false, right = false;
   function upd() { S.input.steer = (right ? 1 : 0) - (left ? 1 : 0); }
 
-  /* Joystick analógico con un dedo: X = girar, Y hacia abajo = freno */
-  var joy = $('joystick'), knob = $('joy-knob');
-  var joyId = null, JR = 48;
-  function joySet(dx, dy) {
-    var d = Math.hypot(dx, dy);
-    if (d > JR) { dx = dx / d * JR; dy = dy / d * JR; }
-    knob.style.transform = 'translate(calc(-50% + ' + dx.toFixed(1) + 'px), calc(-50% + ' + dy.toFixed(1) + 'px))';
-    S.input.steer = clamp(dx / JR, -1, 1);
-    S.input.brake = dy > 22;
+  /* Giro simple: dos botones grandes, mantener pulsado */
+  function bindSteer(elm, set) {
+    var on = function (e) { e.preventDefault(); set(true); elm.classList.add('on'); };
+    var off = function (e) { if (e.cancelable) e.preventDefault(); set(false); elm.classList.remove('on'); };
+    elm.addEventListener('touchstart', on, { passive: false });
+    elm.addEventListener('touchend', off);
+    elm.addEventListener('touchcancel', off);
+    elm.addEventListener('mousedown', on);
+    elm.addEventListener('mouseup', off);
+    elm.addEventListener('mouseleave', function () { set(false); elm.classList.remove('on'); });
   }
-  function joyReset() {
-    joyId = null;
-    knob.style.transform = 'translate(-50%,-50%)';
-    S.input.steer = 0; S.input.brake = false;
-  }
-  function joyPos(t) {
-    var r = joy.getBoundingClientRect();
-    joySet(t.clientX - (r.left + r.width / 2), t.clientY - (r.top + r.height / 2));
-  }
-  joy.addEventListener('touchstart', function (e) {
-    e.preventDefault();
-    if (joyId !== null) return;
-    var t = e.changedTouches[0];
-    joyId = t.identifier;
-    joyPos(t);
-  }, { passive: false });
-  document.addEventListener('touchmove', function (e) {
-    if (joyId === null || joyId === 'mouse') return;
-    for (var i = 0; i < e.changedTouches.length; i++) {
-      if (e.changedTouches[i].identifier === joyId) { e.preventDefault(); joyPos(e.changedTouches[i]); }
-    }
-  }, { passive: false });
-  function joyTouchEnd(e) {
-    if (joyId === null || joyId === 'mouse') return;
-    for (var i = 0; i < e.changedTouches.length; i++) {
-      if (e.changedTouches[i].identifier === joyId) joyReset();
-    }
-  }
-  document.addEventListener('touchend', joyTouchEnd);
-  document.addEventListener('touchcancel', joyTouchEnd);
-  // ratón (para probar en escritorio)
-  joy.addEventListener('mousedown', function (e) {
-    e.preventDefault();
-    if (joyId !== null) return;
-    joyId = 'mouse';
-    joyPos(e);
-  });
-  document.addEventListener('mousemove', function (e) { if (joyId === 'mouse') joyPos(e); });
-  document.addEventListener('mouseup', function () { if (joyId === 'mouse') joyReset(); });
+  bindSteer($('btn-left'), function (v) { left = v; upd(); });
+  bindSteer($('btn-right'), function (v) { right = v; upd(); });
   document.addEventListener('keydown', function (e) {
     if (e.key === 'ArrowLeft') { left = true; upd(); }
     else if (e.key === 'ArrowRight') { right = true; upd(); }
