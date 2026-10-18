@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="theme-color" content="#141a12">
 <title>Rally Race — carreras online con amigos</title>
-<link rel="stylesheet" href="style.css?v=3">
+<link rel="stylesheet" href="style.css?v=4">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
 </head>
 <body>
@@ -45,13 +45,14 @@
     <summary>¿Cómo se juega?</summary>
     <ul>
       <li>📱 <b>Dos botones grandes</b> ◀ ▶ abajo en la pantalla: mantén pulsado para girar. El coche acelera solo.</li>
-      <li>🛢️ <b>Esquiva los obstáculos</b>: manchas de aceite (trompo), barriles y rocas (frenazo), barro (te hunde). Las <b>flechas verdes</b> dan turbo.</li>
-      <li>🧱 Hay <b>muros</b> en los bordes: no se puede atajar por la hierba.</li>
-      <li>🏆 3 vueltas. Cada carrera genera los obstáculos en sitios distintos: ninguna carrera es igual.</li>
+      <li>🛢️ <b>Esquiva los obstáculos</b>: manchas de aceite (trompo), barriles, rocas y <b>neumáticos que ruedan cruzando la pista</b>, barro que te hunde. Las <b>flechas verdes</b> dan turbo.</li>
+      <li>💨 <b>Derrapa en las curvas</b>: si mantienes el derrape, al soltarlo recibes un mini-turbo.</li>
+      <li>🧱 Hay <b>muros</b> en los bordes con un arcén de hierba antes: no se puede atajar, pero no chocas tan fácil.</li>
+      <li>🎲 <b>Pista aleatoria en cada carrera</b> + obstáculos en sitios distintos: ninguna carrera es igual.</li>
       <li>⚠️ Si vas en dirección contraria verás un aviso.</li>
     </ul>
   </details>
-  <p class="version-tag">v3</p>
+  <p class="version-tag">v4</p>
 </section>
 
 <!-- ============ SALA DE ESPERA ============ -->
@@ -62,10 +63,7 @@
   <p id="lobby-note" class="muted"></p>
   <ul id="lobby-players"></ul>
   <p id="lobby-count" class="muted"></p>
-  <div id="track-select" class="hidden">
-    <p class="muted">Pista (la elige el anfitrión)</p>
-    <div class="row" id="track-buttons"></div>
-  </div>
+  <p class="muted">🎲 Pista aleatoria en cada carrera</p>
   <div class="row" style="margin-top:14px">
     <button id="btn-start" class="btn btn-big hidden">🏁 ¡EMPEZAR CARRERA!</button>
     <button id="btn-leave-lobby" class="btn-secondary">Salir</button>
@@ -105,6 +103,6 @@
 
 <div id="toast" class="hidden"></div>
 
-<script src="game.js?v=3"></script>
+<script src="game.js?v=4"></script>
 </body>
 </html>

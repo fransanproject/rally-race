@@ -14,7 +14,7 @@
 
 var SB_URL = 'https://zjcthmglltdrefwnflqm.supabase.co';
 var SB_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InpqY3RobWdsbHRkcmVmd25mbHFtIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTIwODA5OTMsImV4cCI6MjEwNzY1Njk5M30.hWorZSMT1C5dMVXYAaR2_fuduVwit4uJ9qrPGXcBk7o';
-var PROTO_V = 3;
+var PROTO_V = 4;
 var MAX_PLAYERS = 6;
 var LAPS = 3;
 
@@ -72,7 +72,6 @@ var S = {
   name: '', color: PALETTE[0], playerId: randId(), joinedAt: Date.now(),
   roomCode: '', channel: null, sb: null, local: false,
   isHost: false, players: [],           // presence
-  selTrack: 0,
   race: null,          // datos de la carrera en curso
   me: null,            // mi coche
   remotes: {},         // id -> estado rival
@@ -106,7 +105,7 @@ function ensureNet() {
 }
 function trackPresence(st) {
   if (S.channel && !S.local) {
-    try { S.channel.track({ name: S.name, color: S.color, joinedAt: S.joinedAt, v: PROTO_V, st: st || 'lobby', track: S.selTrack }); } catch (e) {}
+    try { S.channel.track({ name: S.name, color: S.color, joinedAt: S.joinedAt, v: PROTO_V, st: st || 'lobby' }); } catch (e) {}
   }
 }
 function joinChannel(code) {
@@ -157,12 +156,6 @@ function onPresenceSync() {
   S.players = players;
   var wasHost = S.isHost;
   S.isHost = players.length > 0 && players[0].id === S.playerId;
-  // la pista la elige el anfitrión: sincronizar su elección con los invitados
-  if (!S.isHost && players.length && S.screen === 'lobby' && typeof players[0].track === 'number' &&
-      players[0].track !== S.selTrack) {
-    S.selTrack = players[0].track;
-    renderTrackButtons();
-  }
 
   // Si estoy en la sala y hay carrera en curso a la que no me uní -> pantalla de espera
   var racing = players.some(function (p) { return p.st === 'racing' && p.id !== S.playerId; });
@@ -255,16 +248,6 @@ function renderLobby() {
   $('lobby-count').textContent = S.players.length + '/' + MAX_PLAYERS + ' jugadores';
   $('lobby-note').textContent = S.players.length >= MAX_PLAYERS ? 'Sala llena' : 'Comparte el código con tus amigos';
   $('btn-start').classList.toggle('hidden', !S.isHost);
-  renderTrackButtons();
-}
-function renderTrackButtons() {
-  var box = $('track-buttons'); box.innerHTML = '';
-  TRACK_NAMES.forEach(function (n, i) {
-    var b = el('button', (i + 1) + '. ' + n, 'track-btn' + (i === S.selTrack ? ' sel' : ''));
-    if (S.isHost) b.addEventListener('click', function () { S.selTrack = i; trackPresence('lobby'); renderTrackButtons(); });
-    else b.disabled = true;
-    box.appendChild(b);
-  });
 }
 function initLobby() {
   $('btn-copy').addEventListener('click', function () {
@@ -282,7 +265,7 @@ function initLobby() {
     });
     send('race_start', {
       seed: (Math.random() * 1e9) | 0,
-      track: S.selTrack,
+      track: (Math.random() * TRACK_NAMES.length) | 0, // siempre aleatoria
       laps: LAPS,
       raceNo: 1,
       startAt: Date.now() + 3500,
@@ -400,11 +383,12 @@ function nearestIdx(tr, x, y, lastIdx) {
 
 /* Obstáculos: tipos con efecto. Se colocan con la semilla de la carrera. */
 var OBSTACLES = {
-  oil:    { r: 26, w: 0.26 },  // mancha de aceite -> trompo
-  barrel: { r: 15, w: 0.24 },  // barril -> frenazo y rebote
-  mud:    { r: 44, w: 0.20 },  // barro -> te hunde (zona)
-  rock:   { r: 21, w: 0.15 },  // roca -> frenazo fuerte
-  boost:  { r: 30, w: 0.15 }   // flechas -> turbo
+  oil:    { r: 26, w: 0.23 },  // mancha de aceite -> trompo
+  barrel: { r: 15, w: 0.21 },  // barril -> frenazo y rebote
+  mud:    { r: 44, w: 0.18 },  // barro -> te hunde (zona)
+  rock:   { r: 21, w: 0.13 },  // roca -> frenazo fuerte
+  boost:  { r: 30, w: 0.13 },  // flechas -> turbo
+  tire:   { r: 16, w: 0.12 }   // neumático rodando -> se mueve cruzando la pista
 };
 function genObstacles(tr, seed, count) {
   var rnd = mulberry32(seed), obs = [], placed = [], tries = 0;
@@ -427,9 +411,34 @@ function genObstacles(tr, seed, count) {
     var lat = (rnd() * 2 - 1) * (tr.roadHalf - 26);
     var p = samplePoint(tr, prog), tang = sampleTangent(tr, prog);
     var nx = -Math.sin(tang), ny = Math.cos(tang);
-    obs.push({ id: obs.length, type: type, x: p[0] + nx * lat, y: p[1] + ny * lat,
-               r: OBSTACLES[type].r, a: tang, hit: 0 });
+    var ob = { id: obs.length, type: type, x: p[0] + nx * lat, y: p[1] + ny * lat,
+               r: OBSTACLES[type].r, a: tang, nx: nx, ny: ny, hit: 0 };
+    if (type === 'tire') {
+      ob.bx = ob.x; ob.by = ob.y;
+      ob.amp = (tr.roadHalf - 30) * (0.5 + rnd() * 0.35);
+      ob.period = 2.5 + rnd() * 2.5;
+      ob.phase = rnd() * 6.28318;
+    }
+    obs.push(ob);
     placed.push(prog);
+  }
+  // garantizar entre 2 y 4 neumáticos rodando por carrera
+  var tires = obs.filter(function (o) { return o.type === 'tire'; });
+  var ci = 0;
+  while (tires.length < 3 && ci < obs.length) {
+    var co = obs[ci++];
+    if (co.type === 'barrel' || co.type === 'oil') {
+      co.type = 'tire'; co.r = OBSTACLES.tire.r;
+      co.bx = co.x; co.by = co.y;
+      co.amp = (tr.roadHalf - 30) * (0.5 + rnd() * 0.35);
+      co.period = 2.5 + rnd() * 2.5;
+      co.phase = rnd() * 6.28318;
+      tires.push(co);
+    }
+  }
+  while (tires.length > 4) {
+    var xo = tires.pop();
+    xo.type = 'oil'; xo.r = OBSTACLES.oil.r;
   }
   return obs;
 }
@@ -444,7 +453,7 @@ function genTrees(tr, seed, count) {
     for (var i = 0; i < tr.n; i += 6) {
       var p = tr.samples[i];
       var dx = p[0] - x, dy = p[1] - y;
-      if (dx * dx + dy * dy < Math.pow(tr.roadHalf + 46, 2)) { ok = false; break; }
+      if (dx * dx + dy * dy < Math.pow(tr.roadHalf + 95, 2)) { ok = false; break; }
     }
     if (!ok) continue;
     trees.push({ x: x, y: y, r: 20 + rnd() * 26, v: rnd() });
@@ -467,7 +476,7 @@ function startRace(cfg) {
     skids: [], parts: []
   };
   S.race = race; S.me = null; S.remotes = {}; S.finishes = {};
-  S.firstFinishAt = 0; S.resultsShown = false;
+  S.firstFinishAt = 0; S.resultsShown = false; S.lastPos = 0;
 
   // Mi coche en la parrilla (orden del roster)
   var myIdx = 0;
@@ -506,8 +515,8 @@ function makeCar(tr, slot) {
   return { x: p[0] + nx * lat, y: p[1] + ny * lat, a: tang, speed: 0, steer: 0,
            idx: idx, prevProg: prog, uProg: prog - 1, // uProg arranca en -1+prog (<0): cruzar la línea = vuelta 0 válida
            lap: 0, finished: false, ft: 0, offroad: false, inMud: false,
-           spinT: 0, spinDir: 1, lastSkid: null, wrongT: 0, wrongAcc: 0, wrongWarn: false,
-           wallOut: false,
+           spinT: 0, spinDir: 1, lastSkid: null, driftT: 0, wrongT: 0, wrongAcc: 0, wrongWarn: false,
+           wallOut: false, prevLap: -1, lapStartT: 0, bestLap: 0,
            hitCd: {} };
 }
 
@@ -553,8 +562,8 @@ function stepCar(me, tr, dt, input, race) {
   var sp = tr.samples[me.idx];
   var distC = Math.hypot(me.x - sp[0], me.y - sp[1]);
   me.offroad = distC > tr.roadHalf;
-  // muros en los bordes: no se puede atajar por la hierba
-  var wallD = tr.roadHalf + 12;
+  // muros en los bordes: hay un arcén de hierba antes de llegar a ellos
+  var wallD = tr.roadHalf + 60;
   if (distC > wallD) {
     var wnx = (me.x - sp[0]) / distC, wny = (me.y - sp[1]) / distC;
     me.x = sp[0] + wnx * wallD;
@@ -572,6 +581,16 @@ function stepCar(me, tr, dt, input, race) {
   if (!me.finished) {
     me.uProg += du;
     me.lap = Math.floor(me.uProg);
+    // tiempos por vuelta
+    if (me.lap !== me.prevLap) {
+      var raceT = (Date.now() - race.goAt) / 1000;
+      if (me.prevLap >= 0 && raceT - me.lapStartT > 3) {
+        var lt = raceT - me.lapStartT;
+        if (!me.bestLap || lt < me.bestLap) me.bestLap = lt;
+      }
+      me.prevLap = me.lap;
+      me.lapStartT = raceT;
+    }
     // dirección contraria
     me.wrongAcc += du; me.wrongT += dt;
     if (me.wrongT > 1.4) {
@@ -603,6 +622,10 @@ function stepCar(me, tr, dt, input, race) {
         me.speed *= 0.22;
         me.x -= Math.cos(me.a) * 38; me.y -= Math.sin(me.a) * 38;
         burst(race, o.x, o.y, '#999', 10);
+      } else if (o.type === 'tire') {
+        me.speed *= 0.5;
+        me.x -= Math.cos(me.a) * 18; me.y -= Math.sin(me.a) * 18;
+        burst(race, o.x, o.y, '#333', 8);
       } else if (o.type === 'boost') {
         me.speed = Math.min(P.maxSpeed * 1.7, me.speed + 380);
         burst(race, me.x, me.y, '#39d353', 14);
@@ -618,7 +641,16 @@ function stepCar(me, tr, dt, input, race) {
       if (race.skids.length > 420) race.skids.splice(0, race.skids.length - 420);
     }
     me.lastSkid = [bx, by];
-  } else me.lastSkid = null;
+    me.driftT += dt;
+  } else {
+    // mini-turbo al soltar un derrape largo
+    if (!me.finished && me.driftT > 0.9 && me.speed > 100) {
+      me.speed = Math.min(P.maxSpeed * 1.35, me.speed + 130);
+      burst(race, me.x, me.y, '#4cc9f0', 12);
+    }
+    me.driftT = 0;
+    me.lastSkid = null;
+  }
   if (me.offroad && me.speed > 150 && Math.random() < 0.5) {
     race.parts.push({ x: me.x, y: me.y, vx: (Math.random() - .5) * 60, vy: (Math.random() - .5) * 60,
                       life: 0.7, t: 0, c: '#c9b18a', r: 5 });
@@ -717,8 +749,8 @@ function buildStaticLayer(race) {
     var wp = tr.samples[wi], wtang = tr.tangents[wi];
     var wnx = -Math.sin(wtang), wny = Math.cos(wtang);
     for (wside = -1; wside <= 1; wside += 2) {
-      var wx = wp[0] + wnx * wside * (tr.roadHalf + 12);
-      var wy = wp[1] + wny * wside * (tr.roadHalf + 12);
+      var wx = wp[0] + wnx * wside * (tr.roadHalf + 60);
+      var wy = wp[1] + wny * wside * (tr.roadHalf + 60);
       g.fillStyle = 'rgba(0,0,0,0.25)';
       g.beginPath(); g.arc(wx + 2, wy + 3, 7, 0, 7); g.fill();
       g.fillStyle = (((wi / 6) | 0) % 2) ? '#d62828' : '#f1faee';
@@ -739,8 +771,9 @@ function buildStaticLayer(race) {
     g.restore();
   })();
 
-  // obstáculos
+  // obstáculos (los neumáticos rodando se dibujan en cada frame, no aquí)
   race.obstacles.forEach(function (o) {
+    if (o.type === 'tire') return;
     if (o.type === 'oil') {
       g.fillStyle = 'rgba(20,20,25,0.85)';
       g.beginPath(); g.ellipse(o.x, o.y, o.r, o.r * 0.7, o.a || 0, 0, 7); g.fill();
@@ -945,6 +978,15 @@ function tick(dt) {
   }
 
   if (race.running) {
+    // neumáticos rodando: posición determinista según el reloj de carrera
+    var tSec = (Date.now() - race.goAt) / 1000, ti, to, toff;
+    for (ti = 0; ti < race.obstacles.length; ti++) {
+      to = race.obstacles[ti];
+      if (to.type !== 'tire') continue;
+      toff = to.amp * Math.sin(6.28318 * tSec / to.period + to.phase);
+      to.x = to.bx + to.nx * toff;
+      to.y = to.by + to.ny * toff;
+    }
     if (S.demo) autopilot(me, race.track);
     stepCar(me, race.track, dt, S.input, race);
     // interpolar rivales
@@ -980,6 +1022,17 @@ function render() {
   var pad = race.layerPad;
   ctx.drawImage(race.layer, tr.minX - pad, tr.minY - pad,
     (tr.maxX - tr.minX) + pad * 2, (tr.maxY - tr.minY) + pad * 2);
+
+  // neumáticos rodando (dinámicos)
+  race.obstacles.forEach(function (o) {
+    if (o.type !== 'tire') return;
+    ctx.fillStyle = 'rgba(0,0,0,0.3)';
+    ctx.beginPath(); ctx.arc(o.x + 3, o.y + 4, o.r, 0, 7); ctx.fill();
+    ctx.fillStyle = '#1e1e1e';
+    ctx.beginPath(); ctx.arc(o.x, o.y, o.r, 0, 7); ctx.fill();
+    ctx.fillStyle = '#4d4d4d';
+    ctx.beginPath(); ctx.arc(o.x, o.y, o.r * 0.45, 0, 7); ctx.fill();
+  });
 
   // derrapes
   ctx.lineCap = 'round';
@@ -1038,7 +1091,10 @@ function updateHUD() {
   var race = S.race, me = S.me;
   if (!race || !me || S.screen !== 'game') return;
   var total = race.roster.length;
-  $('hud-pos').textContent = myPosition() + 'º/' + total;
+  var pos = myPosition();
+  $('hud-pos').textContent = pos + 'º/' + total;
+  if (S.lastPos && pos < S.lastPos && race.running && !me.finished) toast('⬆️ ¡Vas ' + pos + 'º!');
+  S.lastPos = pos;
   var lapShow = me.finished ? race.laps : clamp(me.lap + 1, 1, race.laps);
   $('hud-lap').textContent = 'Vuelta ' + lapShow + '/' + race.laps;
   var t = race.running ? (me.finished ? me.ft : Date.now() - race.goAt) : 0;
@@ -1128,6 +1184,7 @@ function showResults() {
     ul.appendChild(li);
   });
   box.appendChild(ul);
+  if (S.me.bestLap) box.appendChild(el('p', '⚡ Tu mejor vuelta: ' + fmtTime(S.me.bestLap * 1000), 'sub'));
   var row = el('div', null, 'row');
   if (!S.local && S.isHost) {
     var rb = el('button', '🔄 REVANCHA (pista y obstáculos nuevos)', 'btn btn-big');
