@@ -14,7 +14,7 @@
 
 var SB_URL = 'https://zjcthmglltdrefwnflqm.supabase.co';
 var SB_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InpqY3RobWdsbHRkcmVmd25mbHFtIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTIwODA5OTMsImV4cCI6MjEwNzY1Njk5M30.hWorZSMT1C5dMVXYAaR2_fuduVwit4uJ9qrPGXcBk7o';
-var PROTO_V = 4;
+var PROTO_V = 5;
 var MAX_PLAYERS = 6;
 var LAPS = 3;
 
@@ -246,7 +246,9 @@ function renderLobby() {
     ul.appendChild(li);
   });
   $('lobby-count').textContent = S.players.length + '/' + MAX_PLAYERS + ' jugadores';
-  $('lobby-note').textContent = S.players.length >= MAX_PLAYERS ? 'Sala llena' : 'Comparte el código con tus amigos';
+  if (S.players.length < 2) $('lobby-note').textContent = 'Comparte el código: hacen falta al menos 2 jugadores para empezar';
+  else if (S.players.length >= MAX_PLAYERS) $('lobby-note').textContent = 'Sala llena';
+  else $('lobby-note').textContent = S.isHost ? '¡Listos! Pulsa EMPEZAR CARRERA' : 'Esperando a que el anfitrión empiece…';
   $('btn-start').classList.toggle('hidden', !S.isHost);
 }
 function initLobby() {
@@ -259,22 +261,32 @@ function initLobby() {
   $('btn-leave-waiting').addEventListener('click', function () { leaveRoom(); });
   $('btn-start').addEventListener('click', function () {
     if (!S.isHost || !S.channel) return;
-    if (S.players.length < 1) return;
+    if (S.players.length < 2) { toast('Hacen falta al menos 2 jugadores en la sala para empezar.'); return; }
     var roster = S.players.slice(0, MAX_PLAYERS).map(function (p) {
       return { id: p.id, name: p.name, color: p.color };
     });
-    send('race_start', {
+    var cfg = {
       seed: (Math.random() * 1e9) | 0,
       track: (Math.random() * TRACK_NAMES.length) | 0, // siempre aleatoria
       laps: LAPS,
-      raceNo: 1,
-      startAt: Date.now() + 3500,
+      raceNo: (S.race ? S.race.raceNo : 0) + 1,
+      startAt: Date.now() + 3500, // hora común: todos empiezan a la vez
       roster: roster,
       by: S.playerId
-    });
+    };
+    send('race_start', cfg);
+    // El canal no me devuelve mi propio mensaje: arranco en local también,
+    // igual que los invitados al recibirlo. Todos usan el mismo startAt.
+    startRace(cfg);
+    // Reenvío por si algún móvil perdió el primer mensaje en una red inestable
+    setTimeout(function () { send('race_start', cfg); }, 1200);
   });
 }
-function onRaceStart(payload) { startRace(payload); }
+function onRaceStart(payload) {
+  // Ignora duplicados (reenvío del anfitrión): misma carrera ya en marcha
+  if (S.race && S.race.raceNo === payload.raceNo && S.screen === 'game') return;
+  startRace(payload);
+}
 
 /* solo local */
 function startSolo() {
@@ -1193,13 +1205,16 @@ function showResults() {
         return { id: p.id, name: p.name, color: p.color };
       });
       if (!rosterNow.length) rosterNow = race.roster;
-      send('race_start', {
+      var cfg = {
         seed: (Math.random() * 1e9) | 0,
         track: (Math.random() * TRACK_NAMES.length) | 0,
         laps: race.laps, raceNo: race.raceNo + 1,
         startAt: Date.now() + 3500,
         roster: rosterNow, by: S.playerId
-      });
+      };
+      send('race_start', cfg);
+      startRace(cfg); // el anfitrión también arranca en local
+      setTimeout(function () { send('race_start', cfg); }, 1200);
     });
     row.appendChild(rb);
   } else if (!S.local) {
