@@ -12,7 +12,7 @@
 (function () {
 'use strict';
 
-var PROTO_V = 8;
+var PROTO_V = 9;
 var MAX_PLAYERS = 6;
 var LAPS = 3;
 
@@ -69,6 +69,7 @@ var S = {
   screen: 'home',
   name: '', color: PALETTE[0], playerId: randId(), joinedAt: Date.now(),
   roomCode: '', local: false, raceNoSeen: 0,
+  mode: 'normal', roomMode: 'normal', // modo de la sala: 'normal' o 'items' (Mario Kart)
   isHost: false, players: [],           // presence
   race: null,          // datos de la carrera en curso
   me: null,            // mi coche
@@ -170,7 +171,7 @@ function rosterEntry(p) {
 }
 function hostBroadcastRoster() {
   if (!NET.amHost) return;
-  netBroadcast({ type: 'roster', payload: { players: S.players.map(rosterEntry) } }, null);
+  netBroadcast({ type: 'roster', payload: { players: S.players.map(rosterEntry), mode: S.roomMode } }, null);
 }
 function sendStatus(st) {
   if (S.local) return;
@@ -323,7 +324,7 @@ function hostOnConnection(conn) {
       try { conn.send({ type: 'welcome', payload: { you: conn.peer } }); } catch (e) {}
       applyRoster(S.players);
       hostBroadcastRoster();
-      netSendTo(conn.peer, { type: 'roster', payload: { players: S.players.map(rosterEntry) } });
+      netSendTo(conn.peer, { type: 'roster', payload: { players: S.players.map(rosterEntry), mode: S.roomMode } });
       if (S.race) netSendTo(conn.peer, { type: 'race_state', payload: { cfg: S.race.cfg } });
     } else if (msg.type === 'status') {
       S.players.forEach(function (e) { if (e.id === conn.peer) e.st = p.st || 'lobby'; });
@@ -334,6 +335,9 @@ function hostOnConnection(conn) {
     } else if (msg.type === 'player_finished') {
       applyPlayerFinished(p);
       netBroadcast({ type: 'player_finished', payload: p }, conn.peer);
+    } else if (msg.type === 'item_use' || msg.type === 'item_hit') {
+      onItemMsg(msg.type, p);
+      netBroadcast(msg, conn.peer);
     } else if (msg.type === 'race_ack') {
       NET.raceAcks[conn.peer] = p.raceNo;
     }
@@ -403,6 +407,7 @@ function guestOnData(msg) {
   var p = msg.payload || {};
   if (msg.type === 'roster') {
     if (NET.watchdog) { clearTimeout(NET.watchdog); NET.watchdog = null; }
+    if (p.mode) S.roomMode = p.mode;
     applyRoster(p.players || []);
   } else if (msg.type === 'race_start') {
     onRaceStart(p);
@@ -412,6 +417,8 @@ function guestOnData(msg) {
     applyPlayerState(p);
   } else if (msg.type === 'player_finished') {
     applyPlayerFinished(p);
+  } else if (msg.type === 'item_use' || msg.type === 'item_hit') {
+    onItemMsg(msg.type, p);
   } else if (msg.type === 'full') {
     NET.leaving = true;
     lobbyError('Esta sala ya esta llena: hay ' + MAX_PLAYERS + ' jugadores dentro. Que el anfitrion cree otra sala con otro codigo.');
@@ -443,6 +450,7 @@ function hostStart() {
     raceNo: (S.race ? S.race.raceNo : 0) + 1,
     startAt: Date.now() + 3500,
     roster: roster,
+    mode: S.roomMode,
     by: NET.myPeerId
   };
   NET.raceAcks = {};
@@ -493,6 +501,7 @@ function initHome() {
   $('btn-create').addEventListener('click', function () {
     if (!readName()) return;
     S.local = false;
+    S.roomMode = S.mode; // el modo se elige al crear la sala
     joinRoom(makeRoomCode(), true);
   });
   $('btn-join').addEventListener('click', function () {
@@ -506,6 +515,18 @@ function initHome() {
     if (!readName()) return;
     startSolo();
   });
+  // selector de modo (se elige al crear la sala; el invitado hereda el del anfitrión)
+  try { S.mode = localStorage.getItem('rally_mode') || 'normal'; } catch (e) {}
+  if (S.mode !== 'items') S.mode = 'normal';
+  function setMode(m) {
+    S.mode = m;
+    try { localStorage.setItem('rally_mode', m); } catch (e) {}
+    $('mode-normal').classList.toggle('sel', m === 'normal');
+    $('mode-items').classList.toggle('sel', m === 'items');
+  }
+  $('mode-normal').addEventListener('click', function () { setMode('normal'); });
+  $('mode-items').addEventListener('click', function () { setMode('items'); });
+  setMode(S.mode);
   // ?demo=1 -> arranque automático con piloto automático (verificación)
   try {
     var q = new URLSearchParams(location.search);
@@ -536,6 +557,8 @@ function renderLobby() {
     ul.appendChild(li);
   });
   $('lobby-count').textContent = S.players.length + '/' + MAX_PLAYERS + ' jugadores';
+  var lm = $('lobby-mode');
+  if (lm) lm.textContent = S.roomMode ? 'Modo: ' + (S.roomMode === 'items' ? '📦 Con ítems (estilo Mario Kart)' : '🏁 Carrera normal') : '';
   if (S.players.length < 2) $('lobby-note').textContent = 'Comparte el código: hacen falta al menos 2 jugadores para empezar';
   else if (S.players.length >= MAX_PLAYERS) $('lobby-note').textContent = 'Sala llena';
   else $('lobby-note').textContent = S.isHost ? '¡Listos! Pulsa EMPEZAR CARRERA' : 'Esperando a que el anfitrión empiece…';
@@ -559,7 +582,7 @@ function initLobby() {
     joinRoom(S.roomCode, NET.amHost, true);
   });
 }
-/* solo local */
+/* solo local (siempre modo normal: los ítems necesitan rivales) */
 function startSolo() {
   S.local = true; S.roomCode = '';
   startRace({
@@ -569,8 +592,178 @@ function startSolo() {
     raceNo: 1,
     startAt: Date.now() + 3000,
     roster: [{ id: S.playerId, name: S.name, color: S.color }],
+    mode: 'normal',
     by: S.playerId
   });
+}
+
+/* ============================================================
+ * PARTE 2b — modo con ítems (estilo Mario Kart)
+ * Cajas deterministas en la pista (misma semilla que los obstáculos).
+ * 4 ítems: turbo, misil al de delante, aceite detrás y escudo.
+ * El uso se emite por red y el anfitrión lo retransmite a todos.
+ * ============================================================ */
+var ITEMS = {
+  turbo:   { emoji: '⚡', name: 'Turbo' },
+  missile: { emoji: '🚀', name: 'Misil' },
+  oil:     { emoji: '🛢️', name: 'Aceite' },
+  shield:  { emoji: '🛡️', name: 'Escudo' }
+};
+function genItemBoxes(tr, seed) {
+  var rnd = mulberry32((seed ^ 0x1b077a) >>> 0), boxes = [], placed = [], tries = 0;
+  while (boxes.length < 7 && tries < 200) {
+    tries++;
+    var prog = 0.08 + rnd() * 0.87;
+    var ok = true, i;
+    for (i = 0; i < placed.length; i++) {
+      var d = Math.abs(placed[i] - prog);
+      d = Math.min(d, 1 - d);
+      if (d < 0.06) { ok = false; break; }
+    }
+    if (!ok) continue;
+    var lat = (rnd() * 2 - 1) * (tr.roadHalf - 30);
+    var p = samplePoint(tr, prog), tang = sampleTangent(tr, prog);
+    var nx = -Math.sin(tang), ny = Math.cos(tang);
+    boxes.push({ x: p[0] + nx * lat, y: p[1] + ny * lat, taken: false, respawnAt: 0 });
+    placed.push(prog);
+  }
+  return boxes;
+}
+function rollItem() {
+  var r = Math.random();
+  if (r < 0.30) return 'turbo';
+  if (r < 0.55) return 'oil';
+  if (r < 0.80) return 'missile';
+  return 'shield';
+}
+function updateItemSlot() {
+  var race = S.race;
+  if (!race || race.mode !== 'items' || !S.me) return;
+  var it = S.me.item;
+  $('item-emoji').textContent = it ? ITEMS[it].emoji : '📦';
+  $('item-label').textContent = it ? ITEMS[it].name : '';
+  $('btn-item').classList.toggle('empty', !it);
+}
+/* Rival no terminado que va justo delante de mí (por progreso); null si voy 1º */
+function playerAhead() {
+  var race = S.race; if (!race || !S.me) return null;
+  var arr = [];
+  arr.push({ id: S.playerId, finished: S.me.finished, lap: S.me.lap, prog: ((S.me.uProg % 1) + 1) % 1 });
+  Object.keys(S.remotes).forEach(function (id) {
+    var r = S.remotes[id];
+    arr.push({ id: id, finished: !!S.finishes[id], lap: r.lap, prog: r.prog || 0 });
+  });
+  arr.sort(function (a, b) { return scoreOf(b) - scoreOf(a); });
+  for (var i = 0; i < arr.length; i++) {
+    if (arr[i].id === S.playerId) {
+      for (var j = i - 1; j >= 0; j--) if (!arr[j].finished) return arr[j].id;
+      return null;
+    }
+  }
+  return null;
+}
+function addTempOil(x, y, id) {
+  var race = S.race; if (!race) return;
+  for (var i = 0; i < race.obstacles.length; i++) {
+    var o = race.obstacles[i];
+    if (o.temp && o.id === id) return; // ya lo tengo (reenvío duplicado)
+  }
+  race.obstacles.push({ id: id, type: 'oil', x: x, y: y, r: 26, a: 0, temp: true, life: 25 });
+}
+function spinCar(me, race) {
+  me.spinT = 0.95; me.spinDir = Math.random() < 0.5 ? -1 : 1;
+  me.speed *= 0.45;
+  burst(race, me.x, me.y, '#222', 10);
+}
+function useItem() {
+  var race = S.race, me = S.me;
+  if (!race || !me || race.mode !== 'items' || !race.running || me.finished) return;
+  var item = me.item;
+  if (!item) return;
+  if (item === 'missile') {
+    var target = playerAhead();
+    if (!target) { toast('🚀 No hay nadie delante de ti.'); return; } // no se gasta
+    var mid = S.playerId + '-' + Date.now();
+    race.missiles.push({ id: mid, x: me.x, y: me.y, targetId: target, t: 0, life: 4 });
+    send('item_use', { item: 'missile', targetId: target, x: Math.round(me.x), y: Math.round(me.y), id: mid, by: S.playerId });
+    toast('🚀 ¡Misil lanzado!');
+  } else if (item === 'oil') {
+    var oid = S.playerId + '-' + Date.now();
+    var bx = me.x - Math.cos(me.a) * 44, by = me.y - Math.sin(me.a) * 44;
+    addTempOil(bx, by, oid);
+    send('item_use', { item: 'oil', x: Math.round(bx), y: Math.round(by), id: oid, by: S.playerId });
+    toast('🛢️ ¡Aceite soltado detrás!');
+  } else if (item === 'turbo') {
+    me.boostT = 1.4; me.boostMul = 1.7;
+    me.speed = Math.min(P.maxSpeed * 1.7, me.speed + 380);
+    burst(race, me.x, me.y, '#39d353', 14);
+  } else if (item === 'shield') {
+    me.shield = true;
+    toast('🛡️ ¡Escudo activado!');
+  }
+  me.item = null;
+  updateItemSlot();
+}
+/* Mensajes de ítems que llegan por red (el anfitrión los retransmite) */
+function onItemMsg(type, p) {
+  var race = S.race; if (!race || race.mode !== 'items') return;
+  if (type === 'item_use') {
+    if (p.item === 'oil') {
+      addTempOil(p.x, p.y, p.id);
+    } else if (p.item === 'missile') {
+      for (var i = 0; i < race.missiles.length; i++) if (race.missiles[i].id === p.id) return;
+      race.missiles.push({ id: p.id, x: p.x, y: p.y, targetId: p.targetId, t: 0, life: 4 });
+    }
+  } else if (type === 'item_hit') {
+    for (var j = race.missiles.length - 1; j >= 0; j--) {
+      if (race.missiles[j].id === p.id) {
+        burst(race, race.missiles[j].x, race.missiles[j].y, '#ff6b35', 12);
+        race.missiles.splice(j, 1);
+      }
+    }
+  }
+}
+/* Misiles y aceites temporales (se llama cada frame de carrera) */
+function updateItems(dt) {
+  var race = S.race, me = S.me;
+  if (!race || !me || race.mode !== 'items') return;
+  var i, o;
+  for (i = race.obstacles.length - 1; i >= 0; i--) {
+    o = race.obstacles[i];
+    if (o.temp) { o.life -= dt; if (o.life <= 0) race.obstacles.splice(i, 1); }
+  }
+  for (i = race.missiles.length - 1; i >= 0; i--) {
+    var ms = race.missiles[i];
+    ms.t += dt;
+    var isMe = ms.targetId === S.playerId;
+    var rem = S.remotes[ms.targetId];
+    var tx, ty, tFinished;
+    if (isMe) { tx = me.x; ty = me.y; tFinished = me.finished; }
+    else if (rem) { tx = rem.rx; ty = rem.ry; tFinished = !!S.finishes[ms.targetId]; }
+    else { race.missiles.splice(i, 1); continue; } // el objetivo se fue
+    if (tFinished || ms.t > ms.life) {
+      burst(race, ms.x, ms.y, '#888', 8);
+      race.missiles.splice(i, 1); continue;
+    }
+    var mdx = tx - ms.x, mdy = ty - ms.y, md = Math.hypot(mdx, mdy) || 1;
+    ms.x += mdx / md * 950 * dt; ms.y += mdy / md * 950 * dt;
+    if (md < 50) {
+      if (isMe) {
+        if (me.shield) {
+          me.shield = false;
+          toast('🛡️ ¡El escudo paró el misil!');
+          burst(race, me.x, me.y, '#4cc9f0', 16);
+        } else {
+          spinCar(me, race);
+          toast('🚀 ¡Te ha dado un misil!');
+        }
+        send('item_hit', { id: ms.id });
+      } else {
+        burst(race, ms.x, ms.y, '#ff6b35', 12);
+      }
+      race.missiles.splice(i, 1);
+    }
+  }
 }
 
 /* ============================================================
@@ -753,11 +946,15 @@ function startRace(cfg) {
     cfg: cfg, track: tr, trackIdx: cfg.track % TRACK_DEFS.length,
     seed: seed, raceNo: cfg.raceNo || 1, laps: cfg.laps || LAPS,
     startAt: cfg.startAt, roster: cfg.roster,
+    mode: cfg.mode || 'normal',
     obstacles: genObstacles(tr, seed, 15),
+    boxes: [],
+    missiles: [],
     trees: genTrees(tr, seed, 120),
     running: false, goAt: 0,
     skids: [], parts: []
   };
+  if (race.mode === 'items') race.boxes = genItemBoxes(tr, seed);
   S.race = race; S.me = null; S.remotes = {}; S.finishes = {};
   S.firstFinishAt = 0; S.resultsShown = false; S.lastPos = 0;
 
@@ -781,6 +978,9 @@ function startRace(cfg) {
   sendStatus('racing');
   showScreen('game');
   $('hud').classList.remove('hidden');
+  $('btn-item').classList.toggle('hidden', race.mode !== 'items');
+  $('item-label').classList.toggle('hidden', race.mode !== 'items');
+  updateItemSlot();
   $('results').classList.add('hidden');
   $('finish-wait').classList.add('hidden');
   $('hint').classList.remove('hidden');
@@ -799,7 +999,7 @@ function makeCar(tr, slot) {
            idx: idx, prevProg: prog, uProg: prog - 1, // uProg arranca en -1+prog (<0): cruzar la línea = vuelta 0 válida
            lap: 0, finished: false, ft: 0, offroad: false, inMud: false,
            spinT: 0, spinDir: 1, lastSkid: null, driftT: 0, wrongT: 0, wrongAcc: 0, wrongWarn: false,
-           boostT: 0, boostMul: 1,
+           boostT: 0, boostMul: 1, item: null, shield: false,
            wallOut: false, prevLap: -1, lapStartT: 0, bestLap: 0,
            hitCd: {} };
 }
@@ -898,9 +1098,13 @@ function stepCar(me, tr, dt, input, race) {
       if (now - (me.hitCd[o.id] || -9) < 2) continue;
       me.hitCd[o.id] = now;
       if (o.type === 'oil') {
-        me.spinT = 0.95; me.spinDir = Math.random() < 0.5 ? -1 : 1;
-        me.speed *= 0.45;
-        burst(race, me.x, me.y, '#222', 10);
+        if (me.shield) {
+          me.shield = false;
+          burst(race, me.x, me.y, '#4cc9f0', 14);
+          toast('🛡️ ¡El escudo te salvó del aceite!');
+        } else {
+          spinCar(me, race);
+        }
       } else if (o.type === 'barrel') {
         me.speed *= 0.4;
         me.x -= Math.cos(me.a) * 22; me.y -= Math.sin(me.a) * 22;
@@ -917,6 +1121,23 @@ function stepCar(me, tr, dt, input, race) {
         me.boostT = 1.4; me.boostMul = 1.7;
         me.speed = Math.min(P.maxSpeed * 1.7, me.speed + 380);
         burst(race, me.x, me.y, '#39d353', 14);
+      }
+    }
+  }
+
+  // cajas de ítems (modo Mario Kart): solo si no llevo ya un ítem
+  if (race.mode === 'items' && !me.finished) {
+    for (var bi = 0; bi < race.boxes.length; bi++) {
+      var b = race.boxes[bi];
+      if (b.taken) { if (now > b.respawnAt) b.taken = false; continue; }
+      if (me.item) continue;
+      var bdx = me.x - b.x, bdy = me.y - b.y;
+      if (bdx * bdx + bdy * bdy < 46 * 46) {
+        me.item = rollItem();
+        b.taken = true; b.respawnAt = now + 5;
+        toast('📦 ¡Ítem: ' + ITEMS[me.item].name + ' ' + ITEMS[me.item].emoji + '! Toca el botón para usarlo.');
+        updateItemSlot();
+        burst(race, b.x, b.y, '#ffd166', 10);
       }
     }
   }
@@ -1219,7 +1440,8 @@ function startRaceLoop() {
           id: S.playerId, x: Math.round(S.me.x), y: Math.round(S.me.y),
           a: Math.round(S.me.a * 100) / 100, s: Math.round(S.me.speed),
           lap: S.me.lap, pr: Math.round(((S.me.uProg % 1) + 1) % 1 * 1000) / 1000,
-          f: S.me.finished ? 1 : 0, ft: S.me.ft || 0
+          f: S.me.finished ? 1 : 0, ft: S.me.ft || 0,
+          sh: S.me.shield ? 1 : 0
         });
       }
     }, 100);
@@ -1273,6 +1495,7 @@ function tick(dt) {
     }
     if (S.demo) autopilot(me, race.track);
     stepCar(me, race.track, dt, S.input, race);
+    updateItems(dt);
     // interpolar rivales
     var k = Math.min(1, 11 * dt);
     Object.keys(S.remotes).forEach(function (id) {
@@ -1318,6 +1541,39 @@ function render() {
     ctx.beginPath(); ctx.arc(o.x, o.y, o.r * 0.45, 0, 7); ctx.fill();
   });
 
+  // aceites temporales de los ítems (no están en la capa estática)
+  race.obstacles.forEach(function (o) {
+    if (!o.temp || o.type !== 'oil') return;
+    ctx.fillStyle = 'rgba(20,20,25,0.85)';
+    ctx.beginPath(); ctx.ellipse(o.x, o.y, o.r, o.r * 0.7, 0, 0, 7); ctx.fill();
+    ctx.fillStyle = 'rgba(80,80,120,0.5)';
+    ctx.beginPath(); ctx.ellipse(o.x - 6, o.y - 4, o.r * 0.4, o.r * 0.28, 0, 0, 7); ctx.fill();
+  });
+
+  // cajas de ítems (modo Mario Kart)
+  if (race.mode === 'items') {
+    var bt = performance.now() / 1000;
+    race.boxes.forEach(function (b, bi) {
+      if (b.taken) return;
+      var bob = Math.sin(bt * 3 + bi) * 4;
+      ctx.fillStyle = '#f4d35e';
+      roundRect(ctx, b.x - 24, b.y - 24 + bob, 48, 48, 9); ctx.fill();
+      ctx.strokeStyle = '#8a6d00'; ctx.lineWidth = 3; ctx.stroke();
+      ctx.fillStyle = '#7a5c00'; ctx.font = '700 32px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText('?', b.x, b.y + 1 + bob);
+    });
+  }
+
+  // misiles (modo con ítems)
+  if (race.mode === 'items') {
+    race.missiles.forEach(function (ms) {
+      ctx.fillStyle = '#ff6b35';
+      ctx.beginPath(); ctx.arc(ms.x, ms.y, 11, 0, 7); ctx.fill();
+      ctx.fillStyle = '#fff';
+      ctx.beginPath(); ctx.arc(ms.x, ms.y, 4.5, 0, 7); ctx.fill();
+    });
+  }
+
   // derrapes
   ctx.lineCap = 'round';
   race.skids.forEach(function (sk) {
@@ -1341,6 +1597,16 @@ function render() {
     drawCar(ctx, r.rx, r.ry, r.ra, r.color, r.name, false, ghost);
   });
   drawCar(ctx, me.x, me.y, me.a, me.color, me.name, true, false);
+
+  // escudos (anillo cian)
+  if (race.mode === 'items') {
+    ctx.strokeStyle = 'rgba(76,201,240,0.9)'; ctx.lineWidth = 4;
+    if (me.shield) { ctx.beginPath(); ctx.arc(me.x, me.y, 36, 0, 7); ctx.stroke(); }
+    Object.keys(S.remotes).forEach(function (id) {
+      var r = S.remotes[id];
+      if (r.sh) { ctx.beginPath(); ctx.arc(r.rx, r.ry, 36, 0, 7); ctx.stroke(); }
+    });
+  }
 
   ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
   drawMinimapDots();
@@ -1394,6 +1660,7 @@ function applyPlayerState(p) {
   if (!r.t) { r.rx = p.x; r.ry = p.y; r.ra = p.a; }
   r.x = p.x; r.y = p.y; r.a = p.a; r.speed = p.s;
   r.lap = p.lap; r.prog = p.pr; r.t = Date.now();
+  r.sh = !!p.sh;
   if (p.f && !S.finishes[p.id]) applyPlayerFinished({ id: p.id, ft: p.ft });
 }
 function applyPlayerFinished(p) {
@@ -1482,7 +1749,7 @@ function showResults() {
         track: (Math.random() * TRACK_NAMES.length) | 0,
         laps: race.laps, raceNo: race.raceNo + 1,
         startAt: Date.now() + 3500,
-        roster: rosterNow, by: S.playerId
+        roster: rosterNow, by: S.playerId, mode: S.roomMode
       };
       send('race_start', cfg);
       startRace(cfg); // el anfitrión también arranca en local
@@ -1524,10 +1791,18 @@ function initInput() {
   }
   bindSteer($('btn-left'), function (v) { left = v; upd(); });
   bindSteer($('btn-right'), function (v) { right = v; upd(); });
+  // botón de ítem (modo Mario Kart): toque/clic, sin activación por teclado
+  (function () {
+    var ib = $('btn-item');
+    function press(e) { e.preventDefault(); useItem(); }
+    ib.addEventListener('touchstart', press, { passive: false });
+    ib.addEventListener('mousedown', press);
+  })();
   document.addEventListener('keydown', function (e) {
     if (e.key === 'ArrowLeft') { left = true; upd(); }
     else if (e.key === 'ArrowRight') { right = true; upd(); }
     else if (e.key === 'ArrowDown') S.input.brake = true;
+    else if (e.code === 'Space') { e.preventDefault(); useItem(); }
   });
   document.addEventListener('keyup', function (e) {
     if (e.key === 'ArrowLeft') { left = false; upd(); }
