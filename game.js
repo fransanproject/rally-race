@@ -12,7 +12,7 @@
 (function () {
 'use strict';
 
-var PROTO_V = 6;
+var PROTO_V = 7;
 var MAX_PLAYERS = 6;
 var LAPS = 3;
 
@@ -799,6 +799,7 @@ function makeCar(tr, slot) {
            idx: idx, prevProg: prog, uProg: prog - 1, // uProg arranca en -1+prog (<0): cruzar la línea = vuelta 0 válida
            lap: 0, finished: false, ft: 0, offroad: false, inMud: false,
            spinT: 0, spinDir: 1, lastSkid: null, driftT: 0, wrongT: 0, wrongAcc: 0, wrongWarn: false,
+           boostT: 0, boostMul: 1,
            wallOut: false, prevLap: -1, lapStartT: 0, bestLap: 0,
            hitCd: {} };
 }
@@ -826,14 +827,17 @@ function stepCar(me, tr, dt, input, race) {
     var grip = clamp(spd / 150, 0, 1) * (1 - 0.28 * clamp(spd / P.maxSpeed, 0, 1));
     me.a += me.steer * P.turn * grip * dt * (spd < -5 ? -1 : 1);
     // velocidad
+    if (me.boostT > 0) me.boostT -= dt;
     var maxS = P.maxSpeed;
     if (me.offroad) maxS *= 0.55;
     if (me.inMud) maxS *= 0.5;
+    if (me.boostT > 0) maxS = P.maxSpeed * me.boostMul; // turbo activo
     if (input.brake) {
       if (spd > 8) me.speed = Math.max(0, spd - P.brake * dt);
       else me.speed = Math.max(-P.reverseMax, spd - P.accel * 0.7 * dt); // marcha atrás
     } else {
-      me.speed = Math.min(maxS, spd + P.accel * dt * (me.offroad ? 0.6 : 1));
+      if (spd > maxS) me.speed = Math.max(maxS, spd - 260 * dt); // el turbo se acaba poco a poco
+      else me.speed = Math.min(maxS, spd + P.accel * dt * (me.offroad ? 0.6 : 1));
       if (me.speed < 0) me.speed = Math.min(0, me.speed + P.brake * 0.5 * dt);
     }
   }
@@ -910,6 +914,7 @@ function stepCar(me, tr, dt, input, race) {
         me.x -= Math.cos(me.a) * 18; me.y -= Math.sin(me.a) * 18;
         burst(race, o.x, o.y, '#333', 8);
       } else if (o.type === 'boost') {
+        me.boostT = 1.4; me.boostMul = 1.7;
         me.speed = Math.min(P.maxSpeed * 1.7, me.speed + 380);
         burst(race, me.x, me.y, '#39d353', 14);
       }
@@ -928,6 +933,7 @@ function stepCar(me, tr, dt, input, race) {
   } else {
     // mini-turbo al soltar un derrape largo
     if (!me.finished && me.driftT > 0.9 && me.speed > 100) {
+      me.boostT = Math.max(me.boostT, 0.9); me.boostMul = Math.max(me.boostMul, 1.35);
       me.speed = Math.min(P.maxSpeed * 1.35, me.speed + 130);
       burst(race, me.x, me.y, '#4cc9f0', 12);
     }
