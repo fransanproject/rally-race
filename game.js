@@ -12,7 +12,7 @@
 (function () {
 'use strict';
 
-var PROTO_V = 7;
+var PROTO_V = 8;
 var MAX_PLAYERS = 6;
 var LAPS = 3;
 
@@ -931,12 +931,7 @@ function stepCar(me, tr, dt, input, race) {
     me.lastSkid = [bx, by];
     me.driftT += dt;
   } else {
-    // mini-turbo al soltar un derrape largo
-    if (!me.finished && me.driftT > 0.9 && me.speed > 100) {
-      me.boostT = Math.max(me.boostT, 0.9); me.boostMul = Math.max(me.boostMul, 1.35);
-      me.speed = Math.min(P.maxSpeed * 1.35, me.speed + 130);
-      burst(race, me.x, me.y, '#4cc9f0', 12);
-    }
+    // sin mini-turbo al soltar el derrape (eliminado en v8: incontrolable)
     me.driftT = 0;
     me.lastSkid = null;
   }
