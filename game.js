@@ -1,9 +1,9 @@
 /* ============================================================
  * Rally Race — carreras vista cenital, online hasta 6 jugadores.
  *
- * Online: sin servidor propio. Los eventos viajan por Supabase
- * Realtime (canal `rally-XXXX`, Broadcast + Presence), igual que
- * el chinchimoni. Cada cliente simula su propio coche; las
+ * Online: SIN Supabase. La sala la lleva el ANFITRION en su propio
+ * movil (WebRTC con PeerJS): mantiene la lista, reparte el inicio
+ * y retransmite los eventos. Cada cliente simula su propio coche; las
  * posiciones se emiten a ~10 Hz y los rivales se interpolan.
  * Los obstáculos son DETERMINISTAS: se generan con una semilla
  * (código de sala + nº de carrera) idéntica en todos los móviles,
@@ -12,9 +12,7 @@
 (function () {
 'use strict';
 
-var SB_URL = 'https://zjcthmglltdrefwnflqm.supabase.co';
-var SB_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InpqY3RobWdsbHRkcmVmd25mbHFtIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTIwODA5OTMsImV4cCI6MjEwNzY1Njk5M30.hWorZSMT1C5dMVXYAaR2_fuduVwit4uJ9qrPGXcBk7o';
-var PROTO_V = 5;
+var PROTO_V = 6;
 var MAX_PLAYERS = 6;
 var LAPS = 3;
 
@@ -70,7 +68,7 @@ var TRACK_NAMES = ['El Revirado', 'Curvas del Infierno', 'La Herradura'];
 var S = {
   screen: 'home',
   name: '', color: PALETTE[0], playerId: randId(), joinedAt: Date.now(),
-  roomCode: '', channel: null, sb: null, local: false,
+  roomCode: '', local: false, raceNoSeen: 0,
   isHost: false, players: [],           // presence
   race: null,          // datos de la carrera en curso
   me: null,            // mi coche
@@ -89,76 +87,106 @@ function showScreen(name) {
   });
 }
 
-/* ---------------- red ---------------- */
-function send(type, payload) {
-  if (S.channel) { try { S.channel.send({ type: 'broadcast', event: type, payload: payload }); } catch (e) {} }
-}
+/* ---------------- red: salas PeerJS gestionadas por el ANFITRION ----------------
+ * Sin Supabase: no hay proyecto, ni clave, ni canal que se pueda pausar.
+ * Quien crea la sala es el servidor de la partida en su propio movil:
+ * mantiene la lista de jugadores (roster), reparte el inicio y
+ * retransmite los eventos. Los demas moviles se conectan DIRECTAMENTE
+ * al suyo por WebRTC (PeerJS). El unico servicio externo es el punto
+ * de encuentro publico y gratuito de PeerJS (0.peerjs.com), que solo
+ * pone en contacto a los moviles al entrar: no guarda partidas, no
+ * necesita cuenta ni proyecto, y durante la partida los datos van de
+ * movil a movil sin pasar por ningun servidor.
+ * Codigo de sala: 4 cifras. El id del anfitrion en PeerJS es
+ * 'rally-race-XXXX' (el codigo); el invitado usa un id aleatorio.
+ * ------------------------------------------------------------------ */
+var NET = {
+  peer: null, conns: {}, hostConn: null, myPeerId: null,
+  amHost: false, connected: false, joining: false, leaving: false,
+  retries: 0, retryTimer: null, watchdog: null,
+  raceAcks: {}, lastError: ''
+};
+var MAX_RETRIES = 5;
+function hostPeerId(code) { return 'rally-race-' + String(code); }
 function makeRoomCode() {
   var c = '';
   for (var i = 0; i < 4; i++) c += Math.floor(Math.random() * 10);
   return c;
 }
-function ensureNet() {
-  if (!window.supabase) { $('home-error').textContent = 'No se pudo cargar la librería de red. Revisa tu conexión.'; return false; }
-  if (!S.sb) S.sb = window.supabase.createClient(SB_URL, SB_ANON_KEY);
-  return true;
+var peerFallbackTried = false;
+function ensurePeer(cb) {
+  var done = false;
+  function finish(ok) { if (done) return; done = true; cb(ok); }
+  if (window.Peer) { finish(true); return; }
+  if (!peerFallbackTried) {
+    peerFallbackTried = true;
+    try {
+      var s = document.createElement('script');
+      s.src = 'https://unpkg.com/peerjs@1/dist/peerjs.min.js';
+      s.onload = function () { ensurePeer(finish); };
+      s.onerror = function () { ensurePeer(finish); };
+      document.head.appendChild(s);
+    } catch (e) {}
+  }
+  var tries = 0;
+  var iv = setInterval(function () {
+    tries++;
+    if (window.Peer) { clearInterval(iv); finish(true); }
+    else if (tries >= 40) { clearInterval(iv); finish(false); }
+  }, 200);
 }
-function trackPresence(st) {
-  if (S.channel && !S.local) {
-    try { S.channel.track({ name: S.name, color: S.color, joinedAt: S.joinedAt, v: PROTO_V, st: st || 'lobby' }); } catch (e) {}
+function lobbyError(msg) {
+  var e = $('lobby-error');
+  if (e) e.textContent = msg || '';
+  var b = $('btn-retry-conn');
+  if (b) b.classList.toggle('hidden', !msg);
+}
+function send(type, payload) {
+  if (S.local) return;
+  var msg = { type: type, payload: payload || {} };
+  if (NET.amHost) { netBroadcast(msg, null); }
+  else if (NET.hostConn && NET.hostConn.open) { try { NET.hostConn.send(msg); } catch (e) {} }
+}
+function netBroadcast(msg, exceptPeerId) {
+  Object.keys(NET.conns).forEach(function (pid) {
+    if (pid === exceptPeerId) return;
+    var c = NET.conns[pid];
+    if (c && c.open) { try { c.send(msg); } catch (e) {} }
+  });
+}
+function netSendTo(peerId, msg) {
+  var c = NET.conns[peerId];
+  if (c && c.open) { try { c.send(msg); } catch (e) {} }
+}
+function teardownPeer() {
+  Object.keys(NET.conns).forEach(function (pid) { try { NET.conns[pid].close(); } catch (e) {} });
+  NET.conns = {};
+  if (NET.hostConn) { try { NET.hostConn.close(); } catch (e) {} NET.hostConn = null; }
+  if (NET.peer) { try { NET.peer.destroy(); } catch (e) {} NET.peer = null; }
+  NET.connected = false;
+}
+function rosterEntry(p) {
+  return { id: p.id, name: p.name, color: p.color, joinedAt: p.joinedAt || 0, v: p.v || 0, st: p.st || 'lobby' };
+}
+function hostBroadcastRoster() {
+  if (!NET.amHost) return;
+  netBroadcast({ type: 'roster', payload: { players: S.players.map(rosterEntry) } }, null);
+}
+function sendStatus(st) {
+  if (S.local) return;
+  if (NET.amHost) {
+    S.players.forEach(function (p) { if (p.id === NET.myPeerId) p.st = st; });
+    hostBroadcastRoster();
+    if (S.screen === 'lobby') renderLobby();
+  } else {
+    send('status', { st: st });
   }
 }
-function joinChannel(code) {
-  var ch = S.sb.channel('rally-' + code.toLowerCase(), {
-    config: { broadcast: { self: false }, presence: { key: S.playerId } }
-  });
-  S.channel = ch;
-  ch.on('presence', { event: 'sync' }, onPresenceSync);
-  ch.on('broadcast', { event: 'race_start' }, onRaceStart);
-  ch.on('broadcast', { event: 'player_state' }, onPlayerState);
-  ch.on('broadcast', { event: 'player_finished' }, onPlayerFinished);
-  ch.subscribe(function (status) {
-    if (status === 'SUBSCRIBED') {
-      trackPresence('lobby');
-      showScreen('lobby');
-      renderLobby();
-    } else if (status === 'TIMED_OUT' || status === 'CLOSED' || status === 'CHANNEL_ERROR') {
-      $('home-error').textContent = 'No se pudo conectar a la sala. Revisa tu conexión e inténtalo de nuevo.';
-      S.channel = null;
-    }
-  });
-}
-function leaveRoom(silent) {
-  if (S.channel) { try { S.channel.unsubscribe(); } catch (e) {} }
-  S.channel = null; S.race = null; S.me = null; S.remotes = {};
-  S.finishes = {}; S.firstFinishAt = 0; S.resultsShown = false;
-  S.isHost = false; S.local = false; S.players = []; S.roomCode = '';
-  stopRaceLoop();
-  if (!silent) { showScreen('home'); }
-}
-
-function onPresenceSync() {
-  if (!S.channel) return;
-  var state = S.channel.presenceState(), players = [];
-  Object.keys(state).forEach(function (key) {
-    var pres = state[key];
-    if (pres && pres.length) players.push({
-      id: key,
-      name: String(pres[0].name || '¿?').slice(0, 12),
-      color: pres[0].color || '#888',
-      joinedAt: pres[0].joinedAt || 0,
-      v: pres[0].v || 0,
-      st: pres[0].st || 'lobby',
-      track: pres[0].track
-    });
-  });
-  players.sort(function (a, b) { return a.joinedAt - b.joinedAt; });
-  S.players = players;
-  var wasHost = S.isHost;
-  S.isHost = players.length > 0 && players[0].id === S.playerId;
-
-  // Si estoy en la sala y hay carrera en curso a la que no me uní -> pantalla de espera
-  var racing = players.some(function (p) { return p.st === 'racing' && p.id !== S.playerId; });
+function applyRoster(list) {
+  if (!list || !list.length) return;
+  S.players = list.slice(0, MAX_PLAYERS).map(rosterEntry);
+  S.isHost = S.players.length > 0 && S.players[0].id === NET.myPeerId;
+  var racing = S.players.some(function (p) { return p.st === 'racing' && p.id !== NET.myPeerId; });
   if (S.screen === 'lobby' && racing && !S.race) {
     showScreen('waiting');
   } else if (S.screen === 'waiting' && !racing && !S.race) {
@@ -166,11 +194,277 @@ function onPresenceSync() {
   }
   if (S.screen === 'lobby') renderLobby();
   if (S.screen === 'game' && S.race) {
-    // limpiar rivales que se fueron
     var ids = {};
-    players.forEach(function (p) { ids[p.id] = true; });
+    S.players.forEach(function (p) { ids[p.id] = true; });
     Object.keys(S.remotes).forEach(function (id) { if (!ids[id]) delete S.remotes[id]; });
   }
+}
+function renderSelfOnly() {
+  S.players = [{ id: NET.myPeerId || S.playerId, name: S.name, color: S.color, joinedAt: S.joinedAt, v: PROTO_V, st: 'lobby' }];
+  S.isHost = NET.amHost;
+  showScreen('lobby');
+  renderLobby();
+  var note = $('lobby-note');
+  if (note) note.textContent = NET.amHost ? 'Creando tu sala...' : 'Conectando con la sala...';
+}
+function scheduleRetry() {
+  if (NET.leaving || !S.roomCode || NET.retryTimer) return;
+  NET.retries++;
+  if (NET.retries > MAX_RETRIES) {
+    NET.joining = false;
+    lobbyError('No se ha podido conectar con la sala tras ' + MAX_RETRIES + ' intentos (ultimo aviso: ' + (NET.lastError || 'sin respuesta') + '). Revisa tu conexion. Si abriste el juego desde dentro de WhatsApp, abrelo en Safari/Chrome.');
+    return;
+  }
+  var note = $('lobby-note');
+  if (note) note.textContent = 'Conectando... intento ' + (NET.retries + 1) + ' de ' + (MAX_RETRIES + 1) + '.';
+  var code = S.roomCode, host = NET.amHost;
+  NET.retryTimer = setTimeout(function () {
+    NET.retryTimer = null;
+    joinRoom(code, host, true);
+  }, Math.min(1500 * NET.retries, 6000));
+}
+function joinRoom(code, asHost, isRetry) {
+  if (NET.joining) return;
+  NET.joining = true; NET.leaving = false;
+  if (!isRetry) { NET.retries = 0; $('home-error').textContent = ''; }
+  if (NET.retryTimer) { clearTimeout(NET.retryTimer); NET.retryTimer = null; }
+  if (NET.watchdog) { clearTimeout(NET.watchdog); NET.watchdog = null; }
+  lobbyError('');
+  $('lobby-code').textContent = code;
+  showScreen('lobby');
+  renderSelfOnly();
+  ensurePeer(function (ok) {
+    if (!ok) {
+      NET.joining = false;
+      $('home-error').textContent = 'No se pudo cargar la libreria de red. Revisa tu conexion.';
+      showScreen('home');
+      return;
+    }
+    if (NET.leaving) { NET.joining = false; return; }
+    teardownPeer();
+    S.roomCode = code; NET.amHost = asHost; NET.connected = false;
+    if (!isRetry) { S.raceNoSeen = 0; }
+    NET.raceAcks = {};
+    S.players = [];
+    lobbyError('');
+    showScreen('lobby');
+    renderSelfOnly();
+    if (asHost) createHostPeer(code);
+    else createGuestPeer(code);
+  });
+}
+function createHostPeer(code) {
+  var peer;
+  try { peer = new window.Peer(hostPeerId(code)); }
+  catch (e) { NET.joining = false; scheduleRetry(); return; }
+  NET.peer = peer;
+  peer.on('open', function (id) {
+    if (peer !== NET.peer) return;
+    NET.myPeerId = id; S.playerId = id;
+    NET.connected = true; NET.joining = false; NET.retries = 0;
+    S.players = [{ id: id, name: S.name, color: S.color, joinedAt: S.joinedAt, v: PROTO_V, st: 'lobby' }];
+    S.isHost = true;
+    applyRoster(S.players);
+    var note = $('lobby-host-note');
+    if (note) note.textContent = 'Tu movil hace de servidor de esta sala: dejalo con el juego abierto mientras jugais.';
+  });
+  peer.on('connection', function (conn) {
+    if (peer !== NET.peer) return;
+    if (conn.open) hostOnConnection(conn);
+    else conn.on('open', function () { if (peer === NET.peer) hostOnConnection(conn); });
+  });
+  peer.on('error', function (err) {
+    if (peer !== NET.peer) return;
+    var type = (err && err.type) || '';
+    NET.lastError = type || 'error de red';
+    if (type === 'unavailable-id') {
+      var newCode = makeRoomCode();
+      S.roomCode = newCode;
+      $('lobby-code').textContent = newCode;
+      teardownPeer();
+      createHostPeer(newCode);
+      return;
+    }
+    NET.joining = false; NET.connected = false;
+    scheduleRetry();
+  });
+  peer.on('disconnected', function () {
+    if (peer !== NET.peer) return;
+    try { peer.reconnect(); } catch (e) {}
+  });
+}
+function hostAddGuest(peerId, info) {
+  if (S.players.some(function (e) { return e.id === peerId; })) return true;
+  if (S.players.length >= MAX_PLAYERS) return false;
+  S.players.push({ id: peerId, name: (info && info.name) || '¿?', color: (info && info.color) || '#888', joinedAt: (info && info.joinedAt) || Date.now(), v: (info && info.v) || 0, st: 'lobby' });
+  return true;
+}
+function hostRemoveGuest(peerId) {
+  if (!NET.amHost) return;
+  delete NET.conns[peerId];
+  var before = S.players.length;
+  S.players = S.players.filter(function (e) { return e.id !== peerId; });
+  if (S.players.length !== before) {
+    applyRoster(S.players);
+    hostBroadcastRoster();
+  }
+}
+function hostOnConnection(conn) {
+  NET.conns[conn.peer] = conn;
+  conn.on('data', function (msg) {
+    if (!msg || !msg.type) return;
+    var p = msg.payload || {};
+    if (msg.type === 'join') {
+      if (!hostAddGuest(conn.peer, p)) {
+        try { conn.send({ type: 'full', payload: {} }); } catch (e) {}
+        setTimeout(function () { try { conn.close(); } catch (e) {} }, 600);
+        return;
+      }
+      try { conn.send({ type: 'welcome', payload: { you: conn.peer } }); } catch (e) {}
+      applyRoster(S.players);
+      hostBroadcastRoster();
+      netSendTo(conn.peer, { type: 'roster', payload: { players: S.players.map(rosterEntry) } });
+      if (S.race) netSendTo(conn.peer, { type: 'race_state', payload: { cfg: S.race.cfg } });
+    } else if (msg.type === 'status') {
+      S.players.forEach(function (e) { if (e.id === conn.peer) e.st = p.st || 'lobby'; });
+      hostBroadcastRoster();
+    } else if (msg.type === 'player_state') {
+      applyPlayerState(p);
+      netBroadcast({ type: 'player_state', payload: p }, conn.peer);
+    } else if (msg.type === 'player_finished') {
+      applyPlayerFinished(p);
+      netBroadcast({ type: 'player_finished', payload: p }, conn.peer);
+    } else if (msg.type === 'race_ack') {
+      NET.raceAcks[conn.peer] = p.raceNo;
+    }
+  });
+  conn.on('close', function () { hostRemoveGuest(conn.peer); });
+  if (conn.on) conn.on('error', function () { hostRemoveGuest(conn.peer); });
+}
+function createGuestPeer(code) {
+  var peer;
+  try { peer = new window.Peer(); }
+  catch (e) { NET.joining = false; scheduleRetry(); return; }
+  NET.peer = peer;
+  peer.on('open', function (id) {
+    if (peer !== NET.peer) return;
+    NET.myPeerId = id; S.playerId = id;
+    var conn;
+    try { conn = peer.connect(hostPeerId(code), { reliable: true }); }
+    catch (e) { NET.joining = false; scheduleRetry(); return; }
+    NET.hostConn = conn;
+    if (NET.watchdog) clearTimeout(NET.watchdog);
+    NET.watchdog = setTimeout(function () {
+      NET.watchdog = null;
+      if (!S.roomCode || NET.amHost || NET.connected) return;
+      NET.joining = false;
+      lobbyError('No se encuentra ninguna sala con el codigo ' + S.roomCode + '. Comprueba que el anfitrion la ha creado ya (su movil hace de servidor: tiene que tener el juego abierto en la sala) y que el codigo coincide.');
+    }, 10000);
+    conn.on('open', function () {
+      if (peer !== NET.peer) return;
+      NET.connected = true; NET.joining = false; NET.retries = 0;
+      lobbyError('');
+      try { conn.send({ type: 'join', payload: { name: S.name, color: S.color, joinedAt: S.joinedAt, v: PROTO_V } }); } catch (e) {}
+      var note = $('lobby-note');
+      if (note) note.textContent = 'Conectado con el anfitrion. Esperando la lista de jugadores...';
+    });
+    conn.on('data', function (msg) { if (peer === NET.peer) guestOnData(msg); });
+    conn.on('close', function () {
+      if (peer !== NET.peer || NET.leaving) return;
+      NET.connected = false;
+      lobbyError('Se ha cortado la conexion con el anfitrion (si cierra el juego, la sala se cierra). Reintentando...');
+      scheduleRetry();
+    });
+    if (conn.on) conn.on('error', function () {
+      if (peer !== NET.peer || NET.leaving) return;
+      NET.connected = false; scheduleRetry();
+    });
+  });
+  peer.on('error', function (err) {
+    if (peer !== NET.peer) return;
+    var type = (err && err.type) || '';
+    NET.lastError = type || 'error de red';
+    if (type === 'peer-unavailable') {
+      if (NET.watchdog) { clearTimeout(NET.watchdog); NET.watchdog = null; }
+      NET.joining = false;
+      lobbyError('No se encuentra ninguna sala con el codigo ' + S.roomCode + '. Comprueba que el anfitrion la ha creado ya (su movil hace de servidor: tiene que tener el juego abierto en la sala) y que el codigo coincide.');
+      return;
+    }
+    NET.joining = false; NET.connected = false;
+    scheduleRetry();
+  });
+  peer.on('disconnected', function () {
+    if (peer !== NET.peer) return;
+    try { peer.reconnect(); } catch (e) {}
+  });
+}
+function guestOnData(msg) {
+  if (!msg || !msg.type) return;
+  var p = msg.payload || {};
+  if (msg.type === 'roster') {
+    if (NET.watchdog) { clearTimeout(NET.watchdog); NET.watchdog = null; }
+    applyRoster(p.players || []);
+  } else if (msg.type === 'race_start') {
+    onRaceStart(p);
+  } else if (msg.type === 'race_state') {
+    if (p.cfg && !S.race) onRaceStart(p.cfg);
+  } else if (msg.type === 'player_state') {
+    applyPlayerState(p);
+  } else if (msg.type === 'player_finished') {
+    applyPlayerFinished(p);
+  } else if (msg.type === 'full') {
+    NET.leaving = true;
+    lobbyError('Esta sala ya esta llena: hay ' + MAX_PLAYERS + ' jugadores dentro. Que el anfitrion cree otra sala con otro codigo.');
+    teardownPeer(); NET.connected = false;
+  }
+}
+function leaveRoom(silent) {
+  if (NET.retryTimer) { clearTimeout(NET.retryTimer); NET.retryTimer = null; }
+  if (NET.watchdog) { clearTimeout(NET.watchdog); NET.watchdog = null; }
+  teardownPeer();
+  NET.amHost = false; NET.connected = false; NET.joining = false; NET.leaving = false;
+  S.race = null; S.me = null; S.remotes = {};
+  S.finishes = {}; S.firstFinishAt = 0; S.resultsShown = false;
+  S.isHost = false; S.local = false; S.players = []; S.roomCode = '';
+  S.raceNoSeen = 0;
+  stopRaceLoop();
+  if (!silent) { showScreen('home'); }
+}
+function hostStart() {
+  if (!NET.amHost || !NET.connected) return;
+  if (S.players.length < 2) { toast('Hacen falta al menos 2 jugadores en la sala para empezar.'); return; }
+  var roster = S.players.slice(0, MAX_PLAYERS).map(function (p) {
+    return { id: p.id, name: p.name, color: p.color };
+  });
+  var cfg = {
+    seed: (Math.random() * 1e9) | 0,
+    track: (Math.random() * TRACK_NAMES.length) | 0,
+    laps: LAPS,
+    raceNo: (S.race ? S.race.raceNo : 0) + 1,
+    startAt: Date.now() + 3500,
+    roster: roster,
+    by: NET.myPeerId
+  };
+  NET.raceAcks = {};
+  send('race_start', cfg);
+  startRace(cfg);
+  setTimeout(function () { send('race_start', cfg); }, 1200);
+  setTimeout(function () { send('race_start', cfg); }, 3000);
+  setTimeout(function () {
+    if (!S.race || S.race.raceNo !== cfg.raceNo) return;
+    roster.forEach(function (r) {
+      if (r.id === NET.myPeerId) return;
+      if (NET.raceAcks[r.id] !== cfg.raceNo) netSendTo(r.id, { type: 'race_start', payload: cfg });
+    });
+  }, 2500);
+}
+function onRaceStart(payload) {
+  if (!payload || !payload.raceNo) return;
+  if (S.race && S.race.raceNo === payload.raceNo) return;
+  if (S.raceNoSeen && payload.raceNo <= S.raceNoSeen && S.screen === 'game') return;
+  S.raceNoSeen = payload.raceNo;
+  if (!NET.amHost) send('race_ack', { raceNo: payload.raceNo });
+  startRace(payload);
 }
 
 /* ---------------- portada ---------------- */
@@ -198,19 +492,15 @@ function initHome() {
   });
   $('btn-create').addEventListener('click', function () {
     if (!readName()) return;
-    if (!ensureNet()) return;
-    S.roomCode = makeRoomCode();
     S.local = false;
-    joinChannel(S.roomCode);
+    joinRoom(makeRoomCode(), true);
   });
   $('btn-join').addEventListener('click', function () {
     if (!readName()) return;
-    if (!ensureNet()) return;
-    var code = $('input-code').value.replace(/\D/g, '').slice(0, 4);
+    var code = $('input-code').value.replace(/[^0-9]/g, '').slice(0, 4);
     if (code.length !== 4) { $('home-error').textContent = 'Escribe el código de 4 cifras.'; return; }
-    S.roomCode = code;
     S.local = false;
-    joinChannel(code);
+    joinRoom(code, false);
   });
   $('btn-solo').addEventListener('click', function () {
     if (!readName()) return;
@@ -241,7 +531,7 @@ function renderLobby() {
     var li = el('li');
     var dot = el('span', null, 'dot'); dot.style.background = p.color;
     li.appendChild(dot);
-    li.appendChild(el('span', (p.id === S.playerId ? p.name + ' (tú)' : p.name) + (p.id === S.players[0].id ? ' 👑' : '')));
+    li.appendChild(el('span', (p.id === S.playerId ? p.name + ' (tú)' : p.name) + (S.players.length && p.id === S.players[0].id ? ' 👑' : '')));
     if (p.v !== PROTO_V && p.v !== 0) li.appendChild(el('span', '⚠️ versión antigua', 'old'));
     ul.appendChild(li);
   });
@@ -250,6 +540,8 @@ function renderLobby() {
   else if (S.players.length >= MAX_PLAYERS) $('lobby-note').textContent = 'Sala llena';
   else $('lobby-note').textContent = S.isHost ? '¡Listos! Pulsa EMPEZAR CARRERA' : 'Esperando a que el anfitrión empiece…';
   $('btn-start').classList.toggle('hidden', !S.isHost);
+  var hn = $('lobby-host-note');
+  if (hn) hn.textContent = S.isHost ? 'Tu movil hace de servidor de esta sala: dejalo con el juego abierto mientras jugais.' : '';
 }
 function initLobby() {
   $('btn-copy').addEventListener('click', function () {
@@ -259,35 +551,14 @@ function initLobby() {
   });
   $('btn-leave-lobby').addEventListener('click', function () { leaveRoom(); });
   $('btn-leave-waiting').addEventListener('click', function () { leaveRoom(); });
-  $('btn-start').addEventListener('click', function () {
-    if (!S.isHost || !S.channel) return;
-    if (S.players.length < 2) { toast('Hacen falta al menos 2 jugadores en la sala para empezar.'); return; }
-    var roster = S.players.slice(0, MAX_PLAYERS).map(function (p) {
-      return { id: p.id, name: p.name, color: p.color };
-    });
-    var cfg = {
-      seed: (Math.random() * 1e9) | 0,
-      track: (Math.random() * TRACK_NAMES.length) | 0, // siempre aleatoria
-      laps: LAPS,
-      raceNo: (S.race ? S.race.raceNo : 0) + 1,
-      startAt: Date.now() + 3500, // hora común: todos empiezan a la vez
-      roster: roster,
-      by: S.playerId
-    };
-    send('race_start', cfg);
-    // El canal no me devuelve mi propio mensaje: arranco en local también,
-    // igual que los invitados al recibirlo. Todos usan el mismo startAt.
-    startRace(cfg);
-    // Reenvío por si algún móvil perdió el primer mensaje en una red inestable
-    setTimeout(function () { send('race_start', cfg); }, 1200);
+  $('btn-start').addEventListener('click', function () { hostStart(); });
+  $('btn-retry-conn').addEventListener('click', function () {
+    if (!S.roomCode) return;
+    lobbyError('');
+    NET.retries = 0;
+    joinRoom(S.roomCode, NET.amHost, true);
   });
 }
-function onRaceStart(payload) {
-  // Ignora duplicados (reenvío del anfitrión): misma carrera ya en marcha
-  if (S.race && S.race.raceNo === payload.raceNo && S.screen === 'game') return;
-  startRace(payload);
-}
-
 /* solo local */
 function startSolo() {
   S.local = true; S.roomCode = '';
@@ -507,7 +778,7 @@ function startRace(cfg) {
 
   buildStaticLayer(race);
   buildMinimap(race);
-  trackPresence('racing');
+  sendStatus('racing');
   showScreen('game');
   $('hud').classList.remove('hidden');
   $('results').classList.add('hidden');
@@ -1114,7 +1385,7 @@ function updateHUD() {
 }
 
 /* ---- red de carrera ---- */
-function onPlayerState(p) {
+function applyPlayerState(p) {
   if (!S.race || S.local) return;
   if (p.id === S.playerId) return;
   var r = S.remotes[p.id];
@@ -1122,9 +1393,9 @@ function onPlayerState(p) {
   if (!r.t) { r.rx = p.x; r.ry = p.y; r.ra = p.a; }
   r.x = p.x; r.y = p.y; r.a = p.a; r.speed = p.s;
   r.lap = p.lap; r.prog = p.pr; r.t = Date.now();
-  if (p.f && !S.finishes[p.id]) onPlayerFinished({ id: p.id, ft: p.ft });
+  if (p.f && !S.finishes[p.id]) applyPlayerFinished({ id: p.id, ft: p.ft });
 }
-function onPlayerFinished(p) {
+function applyPlayerFinished(p) {
   if (!S.race) return;
   if (!S.finishes[p.id]) {
     S.finishes[p.id] = p.ft;
@@ -1141,7 +1412,7 @@ function onLocalFinished() {
   S.finishes[S.playerId] = S.me.ft;
   if (!S.firstFinishAt) S.firstFinishAt = Date.now();
   if (!S.local) send('player_finished', { id: S.playerId, ft: S.me.ft });
-  onPlayerFinished({ id: S.playerId, ft: S.me.ft });
+  applyPlayerFinished({ id: S.playerId, ft: S.me.ft });
   // mejor tiempo en solitario
   if (S.local) {
     try {
@@ -1215,6 +1486,7 @@ function showResults() {
       send('race_start', cfg);
       startRace(cfg); // el anfitrión también arranca en local
       setTimeout(function () { send('race_start', cfg); }, 1200);
+      setTimeout(function () { send('race_start', cfg); }, 3000);
     });
     row.appendChild(rb);
   } else if (!S.local) {
@@ -1230,7 +1502,7 @@ function showResults() {
   row.appendChild(lb);
   box.appendChild(row);
   // volver a "lobby" para que quien se unió a mitad pueda entrar
-  trackPresence('lobby');
+  sendStatus('lobby');
 }
 
 /* ---- controles táctiles + teclado ---- */
@@ -1290,10 +1562,12 @@ function checkForUpdate(auto) {
   }).catch(function () {});
 }
 function showUpdateBanner(v) {
-  if ($('update-banner')) return;
-  var b = el('div', null, '');
-  b.id = 'update-banner';
-  b.innerHTML = '<span>⚠️ Tienes la versión ' + PROTO_V + '; la actual es la ' + v + '.</span> ';
+  var b = $('update-banner');
+  if (!b) return;
+  if (b.getAttribute('data-v') === String(v)) return;
+  b.setAttribute('data-v', String(v));
+  b.innerHTML = '';
+  b.appendChild(el('span', 'Tienes la version ' + PROTO_V + '; la actual es la ' + v + '. '));
   var btn = el('button', 'Actualizar ahora');
   btn.onclick = function () {
     var url = new URL(location.href);
@@ -1301,8 +1575,20 @@ function showUpdateBanner(v) {
     location.href = url.toString();
   };
   b.appendChild(btn);
-  document.body.insertBefore(b, document.body.firstChild);
+  b.classList.remove('hidden');
 }
+
+/* Al volver a la app (p. ej. tras compartir el codigo por WhatsApp),
+ * iOS/Android pueden haber cortado la conexion: si estamos en una sala
+ * y la conexion cayo, se vuelve a entrar solo a la misma sala. */
+document.addEventListener('visibilitychange', function () {
+  if (document.hidden) return;
+  if (S.roomCode && !NET.connected && !NET.joining && !NET.leaving && !S.local) {
+    NET.retries = 0;
+    joinRoom(S.roomCode, NET.amHost, true);
+  }
+});
+window.addEventListener('pageshow', function (e) { if (e.persisted) checkForUpdate(true); });
 
 /* ---- arranque ---- */
 initHome();
